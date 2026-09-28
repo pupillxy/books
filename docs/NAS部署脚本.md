@@ -92,14 +92,7 @@ networks:
     name: book_default
 ```
 
-> **XS_FQ_ORACLE 说明**（2026-09-29 新增，已写入 NAS compose，改配置前备份为 compose.yaml.bak）：
-> 指向 PC 上的番茄签名 oracle（`_reference/fqemu/oracle_server.py`，端口 8765）。
-> - **它只写在 NAS compose 里**，部署脚本不会碰它，重部署不会丢。
-> - 依赖三件事同时在线：PC 开着模拟器（fqsig）+ oracle_server.py 在跑 + Windows 防火墙放行 8765（已放行，规则名 "FQ Oracle 8765"）。
-> - **PC 重启后**：双击 `_reference/fqemu/start_fq_oracle.bat` 一键拉起，别关窗口。
-> - **PC 局域网 IP 变了**（DHCP）：改 NAS compose 里这一行 → `docker compose up -d --no-deps --force-recreate xiaoshuo-server`；建议路由器给 PC 绑静态 DHCP 租约（当前 192.168.31.102）。
-> - oracle 没跑时：书城的「推荐榜」Tab 报错重试，完本榜/新书榜/巅峰榜和其余功能不受影响（网页端 A 方案兜底）。
-> - 群晖本机跑 redroid 不可行（内核缺 binder 模块），oracle 维持 PC 承载。
+> **XS_FQ_ORACLE 已弃用**（2026-09-29 决策）：App 源/模拟器 oracle 方案已回退——要求 PC 或安卓设备 7×24 常驻（功耗/维护成本不划算），且 GitHub 无公开的纯服务端签名实现（fanqie-dl 关键部分 WIP 停更）。书城全部走网页端（书库近似榜单 + 网页搜索 `/api/store/search`）。完整探索档案保留在 `_reference/fqemu/` 与 `docs/番茄App协议接入方案.md`，若将来番茄开放接口或决定重启此路线可随时恢复（server 代码历史在 git 提交 039f167 之前）。
 
 ## 部署脚本
 

@@ -115,8 +115,8 @@ sudo docker exec <容器名> sh -c "ls -la ${TOMATO_DATA_DIR:-/app/data} 2>/dev/
 - ~~**阶段 2 · oracle 服务化**~~ ✅ 完成（2026-09-29）：`_reference/fqemu/oracle_server.py` 常驻 HTTP 服务（/health /sign /fetch），实测搜索 172KB / 书城 feed 347KB 真实数据。
 - ~~**阶段 3 · Go server 接入**~~ ✅ 完成（2026-09-29）：`internal/fanqie/appclient.go`（oracle 封装 + SearchApp/HomeFeed + 设备参数模板），环境变量 `XS_FQ_ORACLE` 启用；新端点 `GET /api/store/app/search`、`GET /api/store/app/homefeed`（含在库标记）；冒烟测试 `TestSmokeAppClient` + 起 server 带鉴权端到端验证通过（搜索 4.5KB / feed 17.2KB 真实数据）。
 - ~~**阶段 4 · App 端**~~ ✅ 完成（2026-09-29）：书城页「推荐榜」Tab 切 App 排行榜原文（`/store/app/homefeed`，16 本与手机 App 首页一致），完本榜/新书榜/巅峰榜保留书库近似（A 方案）；新增 `store_search_page.dart` 真搜索页（App 源搜索，防抖 + 分页），搜索框从跳书库改为跳真搜索。`flutter analyze`/`test` 全绿。
-- ~~**部署打通**~~ ✅ 完成（2026-09-29）：NAS compose 加 `XS_FQ_ORACLE=http://192.168.31.102:8765`（PC 局域网 IP），server 重部署后端到端验证通过（生产 API 返回真实榜单/搜索数据）；Windows 防火墙已放行 8765；PC 一键启动脚本 `_reference/fqemu/start_fq_oracle.bat`。注意 redroid on 群晖因内核缺 binder 模块不可行，oracle 维持 PC 承载。
-- **待办 · 日常运维**：PC 重启后双击 `start_fq_oracle.bat` 拉起链路；PC IP 变化需同步改 NAS compose（建议路由器给 PC 绑静态 DHCP）；番茄 App 大版本升级后重抓参数模板并同步 `appclient.go` 版本参数。
+- ~~**部署打通**~~ ✅ 完成（2026-09-29）：NAS compose 加 `XS_FQ_ORACLE`、server 重部署后端到端验证通过（生产 API 返回真实榜单/搜索数据）；Windows 防火墙放行 8765。
+- **最终决策（2026-09-29）**：经 GitHub 尽调（无公开可用的纯服务端签名实现，fanqie-dl 关键部分 WIP 停更）与用户确认，**App 源方案弃用**——PC/安卓设备 7×24 常驻的成本不划算。相关代码已回退（git 仓库已初始化，baseline 提交 039f167 之前的历史可查），书城回归网页端（书库近似榜单 + 网页搜索 `/api/store/search`），界面完成优化（焦点大卡 + 骨架屏 + 全屏网格 + 真搜索页）。探索档案保留在 `_reference/fqemu/`；NAS compose 中的 `XS_FQ_ORACLE` 已移除。
 
 ## 6. 风险与对策
 

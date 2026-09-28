@@ -1,0 +1,9 @@
+HTTP/1.1 206 Partial Content
+Access-Control-Allow-Headers: Authorization, Content-Type
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Access-Control-Allow-Origin: *
+Content-Length: 256
+Content-Range: bytes 0-255/10856736
+Content-Type: video/mp4
+Date: Sun, 27 Sep 2026 14:19:04 GMT
+

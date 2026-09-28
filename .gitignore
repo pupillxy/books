@@ -1,0 +1,31 @@
+# Flutter
+app/build/
+app/.dart_tool/
+app/.idea/
+app/.flutter-plugins*
+app/.metadata
+app/ios/Pods/
+app/android/.gradle/
+app/android/local.properties
+app/pubspec.lock
+
+# Go / server
+server/data/
+server/deploy/xiaoshuo-server
+server/tmp_*.db
+*.exe
+*.exe~
+tmp_*
+*.db
+
+# 参考仓库（外部克隆，不入库）
+_reference/tnd-src/
+_reference/fqd-py/
+_reference/fqd-rs2/
+_reference/guoapp/
+_reference/fanqie-rank-mcp/
+_reference/mcp-server-fanqie/
+
+# 系统
+.DS_Store
+Thumbs.db

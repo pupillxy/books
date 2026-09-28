@@ -1,0 +1,416 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>墨笺 · 书城首页推荐榜原型（假数据）</title>
+<style>
+  /* ── 墨笺设计 Token（docs/ui-design-spec.md）────────────────────── */
+  :root {
+    --primary: #c2522c;
+    --primary-deep: #a13f1e;
+    --primary-soft: #fbeae1;
+    --bg-app: #f7efe6;
+    --panel: #ffffff;
+    --ink: #332417;
+    --ink2: #54453a;
+    --muted: #8a7866;
+    --rule: #eadcca;
+    --shadow-sm: 0 3px 14px rgba(161, 63, 30, .07);
+    --shadow-cover: 0 6px 14px rgba(161, 63, 30, .16);
+    --serif: Georgia, "Songti SC", "SimSun", serif;
+    --sans: "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: var(--sans);
+    background: #ede4d7;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 28px 16px 40px;
+  }
+  .caption { color: #6d5c4b; font-size: 13px; margin-bottom: 14px; text-align: center; }
+  .caption b { color: var(--primary-deep); }
+
+  /* ── 手机框 392×812 ── */
+  .phone {
+    width: 392px;
+    height: 812px;
+    background: var(--bg-app);
+    border-radius: 28px;
+    box-shadow: 0 24px 60px rgba(80, 50, 25, .28), 0 0 0 8px #2c241c;
+    overflow-y: auto;
+    overflow-x: hidden;
+    position: relative;
+    scrollbar-width: none;
+  }
+  .phone::-webkit-scrollbar { display: none; }
+
+  .statusbar {
+    height: 30px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0 22px;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--ink);
+  }
+  .statusbar .icons { letter-spacing: 2px; font-size: 10px; color: var(--ink2); }
+
+  .pagehead { padding: 6px 22px 0; }
+  .pagehead h1 {
+    font-family: var(--serif);
+    font-size: 23px;
+    font-weight: 800;
+    color: var(--ink);
+    margin-bottom: 12px;
+  }
+  .searchbox {
+    background: #eef2fb;
+    border-radius: 13px;
+    height: 38px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 13px;
+    color: var(--muted);
+    font-size: 13px;
+  }
+  .searchbox .icon {
+    width: 14px; height: 14px;
+    border: 1.6px solid var(--muted);
+    border-radius: 50%;
+    position: relative;
+  }
+  .searchbox .icon::after {
+    content: ""; position: absolute; width: 6px; height: 1.6px;
+    background: var(--muted); transform: rotate(45deg);
+    right: -5px; bottom: -3px;
+  }
+
+  /* ── 推荐榜卡 ── */
+  .rankcard {
+    margin: 16px 18px 0;
+    background: var(--panel);
+    border-radius: 16px;
+    box-shadow: var(--shadow-sm);
+    padding: 14px 14px 6px;
+  }
+  .rankhead { display: flex; align-items: baseline; gap: 10px; padding: 0 2px 12px; }
+  .rankname {
+    font-family: var(--serif);
+    font-size: 17px;
+    font-weight: 800;
+    color: var(--ink);
+    flex: none;
+  }
+  .ranktabs { display: flex; gap: 10px; flex: 1; overflow-x: auto; scrollbar-width: none; }
+  .ranktabs::-webkit-scrollbar { display: none; }
+  .ranktab {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--muted);
+    cursor: pointer;
+    flex: none;
+  }
+  .ranktab:active { color: var(--primary); }
+  .rankmore { font-size: 11px; color: var(--muted); text-decoration: none; flex: none; cursor: pointer; }
+
+  .rankgrid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px 14px;
+    padding-bottom: 10px;
+  }
+  .book { display: flex; gap: 8px; cursor: pointer; min-width: 0; }
+  .book:active .btitle { color: var(--primary); }
+  .rankno {
+    font-family: var(--serif);
+    font-size: 15px;
+    font-weight: 800;
+    color: var(--muted);
+    width: 15px;
+    flex: none;
+    padding-top: 1px;
+  }
+  .rankno.top { color: var(--primary); }
+  .cover {
+    width: 50px;
+    height: 67px;
+    border-radius: 10px;
+    flex: none;
+    box-shadow: var(--shadow-cover);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .cover span {
+    font-family: var(--serif);
+    color: rgba(255, 255, 255, .92);
+    font-size: 12px;
+    letter-spacing: 2px;
+    text-shadow: 0 1px 4px rgba(0, 0, 0, .18);
+  }
+  .binfo { flex: 1; min-width: 0; padding-top: 2px; }
+  .btitle {
+    font-family: var(--serif);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ink);
+    line-height: 1.35;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .bmeta {
+    font-size: 10.5px;
+    color: var(--muted);
+    margin-top: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .bmeta b { color: var(--primary); font-weight: 700; }
+
+  /* ── 今日推荐双卡 ── */
+  .sechead {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 18px 20px 10px;
+  }
+  .sechead h2 { font-size: 14.5px; font-weight: 700; color: var(--ink); }
+  .sechead a { font-size: 11px; color: var(--muted); text-decoration: none; cursor: pointer; }
+  .bigcards { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; padding: 0 18px 24px; }
+  .bigcard { background: var(--panel); border-radius: 14px; overflow: hidden; box-shadow: var(--shadow-sm); cursor: pointer; }
+  .bigcard .bcover {
+    height: 170px;
+    display: flex; align-items: center; justify-content: center;
+    position: relative;
+  }
+  .bigcard .bcover span {
+    font-family: var(--serif);
+    color: rgba(255,255,255,.92);
+    font-size: 14px; letter-spacing: 3px;
+    text-shadow: 0 1px 4px rgba(0,0,0,.18);
+  }
+  .bigcard .bcover .badge {
+    position: absolute; top: 8px; right: 8px;
+    background: rgba(255,255,255,.85);
+    color: var(--primary-deep);
+    font-size: 9px; font-weight: 800;
+    padding: 3px 7px; border-radius: 999px;
+  }
+  .bigcard .bbody { padding: 10px 12px 12px; }
+  .bigcard .bbody .t {
+    font-family: var(--serif); font-size: 13.5px; font-weight: 700; color: var(--ink);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .bigcard .bbody .m { font-size: 10.5px; color: var(--muted); margin-top: 3px; }
+
+  /* ── Toast / 备注 ── */
+  .toast {
+    position: absolute;
+    left: 50%; bottom: 56px;
+    transform: translateX(-50%);
+    background: rgba(20, 15, 12, .9);
+    color: #fff;
+    font-size: 12.5px;
+    padding: 9px 18px;
+    border-radius: 999px;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity .25s;
+    white-space: nowrap;
+    z-index: 9;
+  }
+  .toast.show { opacity: 1; }
+  .notes {
+    max-width: 392px;
+    margin-top: 18px;
+    font-size: 12px;
+    color: #6d5c4b;
+    line-height: 1.8;
+    background: rgba(255, 255, 255, .55);
+    border: 1px dashed #c9b69d;
+    border-radius: 12px;
+    padding: 12px 16px;
+  }
+  .notes code { color: var(--primary-deep); font-family: Consolas, monospace; font-size: 11px; }
+</style>
+</head>
+<body>
+
+<div class="caption">「墨笺」书城首页 · <b>推荐榜卡原型</b> —— 假数据 + 占位封面，确认效果后接入 Flutter</div>
+
+<div class="phone">
+  <div class="statusbar"><span>9:41</span><span class="icons">5G ▮▮▮▯ 87%</span></div>
+
+  <header class="pagehead">
+    <h1>书城</h1>
+    <div class="searchbox"><span class="icon"></span>搜索书名或作者</div>
+  </header>
+
+  <section class="rankcard">
+    <div class="rankhead">
+      <div class="rankname" id="boardName">推荐榜</div>
+      <div class="ranktabs" id="boardTabs"></div>
+      <a class="rankmore" id="boardMore">完整榜单 ›</a>
+    </div>
+    <div class="rankgrid" id="rankGrid"></div>
+  </section>
+
+  <section class="today">
+    <div class="sechead"><h2>今日推荐</h2><a id="moreToday">查看更多 ›</a></div>
+    <div class="bigcards" id="bigCards"></div>
+  </section>
+
+  <div class="toast" id="toast"></div>
+</div>
+
+<div class="notes">
+  <b>假数据说明</b>：封面为占位色块（渐变色板取自 ui-design-spec.md），中间「封面」二字；书名取自番茄实时榜单，仅作观感参考。<br>
+  <b>真实数据接入</b>（server 已实现）：榜单清单 <code>GET /api/store/featured</code>；榜单内容
+  <code>GET /api/store/featured/{recommend|finished|new|peak}?gender=1&amp;offset=0&amp;limit=10</code>，
+  返回 <code>{id,title,author,cover,read_count,finished,word_count}</code>。副行 = 分类/完结态 · read_count；封面为空时落占位块。
+</div>
+
+<script>
+/* ═══ 假数据：结构与 server 返回一致，接入时整体替换为 fetch ═══
+   GET /api/store/featured                → { items: [{key,name},...] }
+   GET /api/store/featured/:board         → { items: [...], has_more }
+   字段映射：title→书名  author→作者  read_count→在读  finished→完结角标
+            word_count→字数  cover→封面(空则用占位块)                */
+const GRADS = [
+  ['#5b6bcd', '#3b4a97'], ['#2aa39a', '#16756e'], ['#8a6ed8', '#5c46a8'],
+  ['#e08a52', '#c0622f'], ['#d46c9a', '#a84472'], ['#4aa877', '#2d7c52'],
+];
+
+const FAKE_DATA = {
+  recommend: { name: '推荐榜', items: [
+    { title: '诡舍2', cat: '悬疑灵异', reads: '47.6万人在读' },
+    { title: '不拱火我来汉东干什么？', cat: '都市脑洞', reads: '50.7万人在读' },
+    { title: '游走神话时代，开局拜师道门天师', cat: '东方仙侠', reads: '43.6万人在读' },
+    { title: '玩家都说我是赛博女鬼？', cat: '科幻末世', reads: '32.2万人在读' },
+    { title: '衰神气运逆转，回老家享受生活', cat: '都市日常', reads: '32.2万人在读' },
+    { title: '我在长安开当铺', cat: '历史古代', reads: '29.8万人在读' },
+    { title: '霍格沃茨的血巫教授', cat: '动漫衍生', reads: '27.1万人在读' },
+    { title: '洪荒：开局契约妲己', cat: '传统玄幻', reads: '25.4万人在读' },
+  ]},
+  finished: { name: '完本榜', items: [
+    { title: '还剩三个月命，请让我从容赴死', cat: '都市脑洞', reads: '12.7万人在读', fin: 1 },
+    { title: '孙子兵法与三十六计', cat: '历史古代', reads: '10.9万人在读', fin: 1 },
+    { title: '四合院：狠人进院', cat: '都市日常', reads: '11.0万人在读', fin: 1 },
+    { title: '悍匪局长：开局枪指黑道太子', cat: '战神赘婿', reads: '8.8万人在读', fin: 1 },
+    { title: '祖上十八鬼帝，你让我恐怖求生？', cat: '悬疑灵异', reads: '8.3万人在读', fin: 1 },
+    { title: '剑来', cat: '东方仙侠', reads: '168.2万人在读', fin: 1 },
+    { title: '十日终焉', cat: '科幻末世', reads: '176.2万人在读', fin: 1 },
+    { title: '回到过去当学阀', cat: '历史脑洞', reads: '45.1万人在读', fin: 1 },
+  ]},
+  new: { name: '新书榜', items: [
+    { title: '原神：在璃月当地仙，群友却是星', cat: '动漫衍生', reads: '13.3万人在读', fin: 0 },
+    { title: '游戏尚未开始', cat: '科幻末世', reads: '未满1000人在读', fin: 0 },
+    { title: '踏遍群星，未见神明', cat: '西方奇幻', reads: '未满1000人在读', fin: 0 },
+    { title: '离婚后，开始放飞自我！', cat: '都市日常', reads: '2348人在读', fin: 0 },
+    { title: '末世秩序重建：我有人类最高权限', cat: '科幻末世', reads: '未满1000人在读', fin: 0 },
+    { title: '规则怪谈：无所谓，系统会出手', cat: '悬疑脑洞', reads: '168.4万人在读', fin: 0 },
+    { title: '仙侠：从修补天道开始', cat: '东方仙侠', reads: '3.1万人在读', fin: 0 },
+    { title: '年代：从供销社开始崛起', cat: '都市种田', reads: '1.9万人在读', fin: 0 },
+  ]},
+  peak: { name: '巅峰榜', items: [
+    { title: '神通者', cat: '传统玄幻', reads: '181.2万人在读' },
+    { title: '十日终焉', cat: '科幻末世', reads: '176.2万人在读' },
+    { title: '我不是戏神', cat: '都市脑洞', reads: '170.9万人在读' },
+    { title: '规则怪谈：无所谓，系统会出手', cat: '悬疑脑洞', reads: '168.4万人在读' },
+    { title: '这个游戏不对劲，我挖矿成神！', cat: '科幻末世', reads: '163.1万人在读' },
+    { title: '剑来', cat: '东方仙侠', reads: '168.2万人在读' },
+    { title: '万相之王', cat: '传统玄幻', reads: '151.7万人在读' },
+    { title: '灵境行者', cat: '都市高武', reads: '149.3万人在读' },
+  ]},
+  drama: { name: '短剧榜', items: [
+    { title: '朱标私生子，老朱逼我当皇帝', cat: '历史古代 · 80集', reads: '8664万播放', fin: 1 },
+    { title: '视觉进化，从看穿所有人秘密开始', cat: '都市脑洞 · 72集', reads: '8981万播放', fin: 1 },
+    { title: '穿成穷书生，我靠医术带全家逆袭', cat: '历史古代 · 85集', reads: '8556万播放', fin: 1 },
+    { title: '仙仙归来，家人竟护了我十年', cat: '新书 · 修真 · 66集', reads: '7701万播放', fin: 0 },
+    { title: '年代：捡漏大小姐，买一送二？', cat: '都市种田 · 78集', reads: '7279万播放', fin: 1 },
+    { title: '相亲失败！我把精神小妹捧成影后', cat: '都市日常 · 90集', reads: '6820万播放', fin: 1 },
+    { title: '大秦：关于我认错祖龙当爹这件事', cat: '历史脑洞 · 80集', reads: '8664万播放', fin: 1 },
+    { title: '接单缉北救校花，我成国家意志', cat: '都市高武 · 75集', reads: '7980万播放', fin: 1 },
+  ]},
+};
+
+/* 真实接口接入示例（替换 FAKE_DATA 即可，渲染逻辑不变）：
+   const api = 'http://你的服务器:端口/api';
+   const h = await (await fetch(api + '/store/featured', { headers: { Authorization: 'Bearer ' + token } })).json();
+   // featured 端点返回 items:[{id,title,author,cover,read_count,finished,word_count}]，
+   // 渲染时 cat 可用 finished/word_count 组成副行，cover 为空落 GRADS 占位块。  */
+
+const $ = (id) => document.getElementById(id);
+let current = 'recommend';
+
+function coverHTML(i) {
+  const g = GRADS[i % GRADS.length];
+  return `<div class="cover" style="background:linear-gradient(160deg,${g[0]},${g[1]})"><span>封面</span></div>`;
+}
+
+function renderBoard(key) {
+  current = key;
+  const board = FAKE_DATA[key];
+  $('boardName').textContent = board.name;
+  $('boardTabs').innerHTML = Object.keys(FAKE_DATA)
+    .filter((k) => k !== key)
+    .map((k) => `<span class="ranktab" data-key="${k}">${FAKE_DATA[k].name}</span>`)
+    .join('');
+  $('rankGrid').innerHTML = board.items
+    .map((b, i) => `
+      <div class="book">
+        <div class="rankno ${i < 3 ? 'top' : ''}">${i + 1}</div>
+        ${coverHTML(i)}
+        <div class="binfo">
+          <div class="btitle">${b.title}</div>
+          <div class="bmeta">${b.cat} · <b>${b.reads}</b>${b.fin ? ' · 完结' : ''}</div>
+        </div>
+      </div>`)
+    .join('');
+}
+
+$('boardTabs').addEventListener('click', (e) => {
+  const t = e.target.closest('.ranktab');
+  if (t) renderBoard(t.dataset.key);
+});
+$('boardMore').addEventListener('click', () => toast('跳转完整榜单页（原型未实现）'));
+$('moreToday').addEventListener('click', () => toast('跳转今日推荐列表（原型未实现）'));
+
+let toastTimer = null;
+function toast(msg) {
+  const el = $('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 1600);
+}
+
+/* 今日推荐双卡（假数据） */
+const TODAY = [
+  { title: '朱标私生子，老朱逼我当皇帝', meta: '新书 · 秦野穿越大明 · 8.7分', badge: '热映' },
+  { title: '校花双胞胎？全来给我打工吧', meta: '新书 ·【无AI】【多女主】', badge: '702' },
+];
+$('bigCards').innerHTML = TODAY.map((b, i) => {
+  const g = GRADS[(i + 3) % GRADS.length];
+  return `
+    <div class="bigcard">
+      <div class="bcover" style="background:linear-gradient(160deg,${g[0]},${g[1]})">
+        <span>封面</span><div class="badge">${b.badge}</div>
+      </div>
+      <div class="bbody"><div class="t">${b.title}</div><div class="m">${b.meta}</div></div>
+    </div>`;
+}).join('');
+
+renderBoard('recommend');
+</script>
+</body>
+</html>

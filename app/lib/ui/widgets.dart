@@ -76,11 +76,20 @@ class PageHeader extends StatelessWidget {
 
 /// 下划线选中 Tab：选中主色加粗 + 底部 2.5px 短下划线（书城/榜单页通用）
 class MoUnderlineTab extends StatelessWidget {
-  const MoUnderlineTab({super.key, required this.label, required this.selected, required this.onTap});
+  const MoUnderlineTab({
+    super.key,
+    required this.label,
+    required this.selected,
+    required this.onTap,
+    this.hPad = 12,
+  });
 
   final String label;
   final bool selected;
   final VoidCallback onTap;
+
+  /// 水平内边距：行内空间紧张时（如书城 Tab 行右侧还要放频道切换）可调小
+  final double hPad;
 
   @override
   Widget build(BuildContext context) {
@@ -89,7 +98,7 @@ class MoUnderlineTab extends StatelessWidget {
       onTap: onTap,
       borderRadius: BorderRadius.circular(8),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12),
+        padding: EdgeInsets.symmetric(horizontal: hPad),
         alignment: Alignment.center,
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -99,7 +108,7 @@ class MoUnderlineTab extends StatelessWidget {
               style: TextStyle(
                 fontSize: 14,
                 fontWeight: selected ? FontWeight.w700 : FontWeight.w600,
-                color: selected ? MoStyle.primaryStrong : cs.onSurfaceVariant,
+                color: selected ? MoStyle.strongOf(context) : cs.onSurfaceVariant,
               ),
             ),
             const SizedBox(height: 4),
@@ -108,7 +117,7 @@ class MoUnderlineTab extends StatelessWidget {
               width: 20,
               height: 2.5,
               decoration: BoxDecoration(
-                color: selected ? MoStyle.primaryStrong : Colors.transparent,
+                color: selected ? MoStyle.strongOf(context) : Colors.transparent,
                 borderRadius: BorderRadius.circular(2),
               ),
             ),

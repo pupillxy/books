@@ -341,7 +341,7 @@ func (h *StoreHandler) AddBook(c *gin.Context) {
 		return
 	}
 
-	bookID, title, err := h.importOnline(fid, middleware.UserID(c))
+	bookID, title, err := h.importOnline(fid, middleware.UserID(c), true)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "入库失败: " + err.Error()})
 		return
@@ -354,17 +354,21 @@ func (h *StoreHandler) AddBook(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ok": true, "book_id": bookID, "status": "online", "download_status": downloadStatus})
 }
 
-// AutoDownload 详情页进入即调用（幂等）：未入库 → 入库+加书架+触发整本下载；
+// AutoDownload 详情页进入即调用（幂等）：未入库 → 入库 + 触发整本下载；
 // 已入库但仅有在线免费章 → 补触发下载；已下载全文/下载中 → 直接返回当前状态。
+// query shelf=0 时仅入库+下载、不加入书架（书架由用户手动「加入书架」控制）。
 func (h *StoreHandler) AutoDownload(c *gin.Context) {
 	fid := c.Param("fanqieID")
 	if !fanqie.ValidateBookID(fid) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "书籍 ID 无效"})
 		return
 	}
+	addShelf := c.DefaultQuery("shelf", "1") != "0"
 	userID := middleware.UserID(c)
 	if bk, err := h.DB.GetBookByFanqieID(fid); err == nil {
-		_ = h.DB.AddShelf(userID, bk.ID)
+		if addShelf {
+			_ = h.DB.AddShelf(userID, bk.ID)
+		}
 		var ds string
 		if bk.Status != "ready" && bk.Status != "downloading" {
 			ds = h.triggerDownload(fid, bk.Title, bk.ID)
@@ -375,7 +379,7 @@ func (h *StoreHandler) AutoDownload(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"ok": true, "book_id": bk.ID, "status": bk.Status, "download_status": ds, "already": true})
 		return
 	}
-	bookID, title, err := h.importOnline(fid, userID)
+	bookID, title, err := h.importOnline(fid, userID, addShelf)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "自动入库失败: " + err.Error()})
 		return
@@ -388,8 +392,8 @@ func (h *StoreHandler) AutoDownload(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ok": true, "book_id": bookID, "status": status, "download_status": ds})
 }
 
-// importOnline 拉取详情+目录并预入库（幂等），同时加入书架；返回 bookID 与标题
-func (h *StoreHandler) importOnline(fid string, userID int64) (int64, string, error) {
+// importOnline 拉取详情+目录并预入库（幂等），按需加入书架；返回 bookID 与标题
+func (h *StoreHandler) importOnline(fid string, userID int64, addShelf bool) (int64, string, error) {
 	detail, err := h.getBookDetail(fid)
 	if err != nil {
 		return 0, "", err
@@ -419,7 +423,9 @@ func (h *StoreHandler) importOnline(fid string, userID int64) (int64, string, er
 	if err := h.DB.ReplaceChapterMeta(bookID, metas); err != nil {
 		return 0, "", err
 	}
-	_ = h.DB.AddShelf(userID, bookID)
+	if addShelf {
+		_ = h.DB.AddShelf(userID, bookID)
+	}
 	return bookID, detail.Title, nil
 }
 

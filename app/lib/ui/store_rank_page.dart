@@ -297,7 +297,7 @@ class _RankPill extends StatelessWidget {
             style: TextStyle(
               fontSize: 12.5,
               height: 1,
-              color: selected ? MoStyle.primaryStrong : cs.onSurfaceVariant,
+              color: selected ? MoStyle.strongOf(context) : cs.onSurfaceVariant,
               fontWeight: selected ? FontWeight.w700 : FontWeight.w400,
             ),
           ),
@@ -491,8 +491,10 @@ class _RankRow extends StatelessWidget {
                             borderRadius: BorderRadius.circular(4),
                           ),
                           child: Text(book.localStatus == 'ready' ? '全文' : '在库',
-                              style: const TextStyle(
-                                  fontSize: 9.5, fontWeight: FontWeight.w600, color: MoStyle.primaryStrong)),
+                              style: TextStyle(
+                                  fontSize: 9.5,
+                                  fontWeight: FontWeight.w600,
+                                  color: MoStyle.strongOf(context))),
                         ),
                       ],
                     ],

@@ -9,8 +9,22 @@ import 'store_book_detail_page.dart';
 import 'widgets.dart';
 
 /// 书库：番茄官网筛选浏览（频道/分类/状态/字数 + 热门/最新/字数排序 + 封面网格）
+/// 支持深链预设（书城首页「分类直达」/「完本精选」「新书速递」入口）。
 class StoreLibraryPage extends ConsumerStatefulWidget {
-  const StoreLibraryPage({super.key});
+  const StoreLibraryPage({
+    super.key,
+    this.initialGender = '1',
+    this.initialCatGroup = '',
+    this.initialCatId = -1,
+    this.initialStatus = -1,
+    this.initialSort = 0,
+  });
+
+  final String initialGender; // '1' 男生 '0' 女生
+  final String initialCatGroup; // '' 不限；主分类/主题/角色/情节
+  final int initialCatId;
+  final int initialStatus; // -1 全部 0 已完结
+  final int initialSort; // 0 热门 1 最新 2 字数
 
   @override
   ConsumerState<StoreLibraryPage> createState() => _StoreLibraryPageState();
@@ -42,6 +56,11 @@ class _StoreLibraryPageState extends ConsumerState<StoreLibraryPage> {
   @override
   void initState() {
     super.initState();
+    _gender = widget.initialGender;
+    _catGroup = widget.initialCatGroup;
+    _catId = widget.initialCatId;
+    _status = widget.initialStatus;
+    _sort = widget.initialSort;
     _loadCategories();
     _loadBooks();
   }
@@ -409,7 +428,7 @@ class _Chip extends StatelessWidget {
             style: TextStyle(
               fontSize: 12,
               height: 1,
-              color: selected ? MoStyle.primaryStrong : cs.onSurfaceVariant,
+              color: selected ? MoStyle.strongOf(context) : cs.onSurfaceVariant,
               fontWeight: selected ? FontWeight.w700 : FontWeight.w400,
             ),
           ),
@@ -444,7 +463,7 @@ class _UnderlineTab extends StatelessWidget {
               style: TextStyle(
                 fontSize: 13.5,
                 fontWeight: selected ? FontWeight.w700 : FontWeight.w600,
-                color: selected ? MoStyle.primaryStrong : cs.onSurfaceVariant,
+                color: selected ? MoStyle.strongOf(context) : cs.onSurfaceVariant,
               ),
             ),
             const SizedBox(height: 4),
@@ -452,7 +471,7 @@ class _UnderlineTab extends StatelessWidget {
               width: 18,
               height: 2.5,
               decoration: BoxDecoration(
-                color: selected ? MoStyle.primaryStrong : Colors.transparent,
+                color: selected ? MoStyle.strongOf(context) : Colors.transparent,
                 borderRadius: BorderRadius.circular(2),
               ),
             ),

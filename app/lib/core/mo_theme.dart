@@ -20,6 +20,18 @@ class MoStyle {
   /// 正文主墨色（跟随深浅色：深色模式用亮墨，避免暗底暗字看不清）
   static Color inkOf(BuildContext context) =>
       Theme.of(context).colorScheme.brightness == Brightness.dark ? darkInk : ink;
+
+  /// 次级墨色（跟随深浅色，对应 cs.onSurfaceVariant）
+  static Color ink2Of(BuildContext context) =>
+      Theme.of(context).colorScheme.brightness == Brightness.dark ? darkInk2 : ink2;
+
+  /// 主色强调（跟随深浅色：深色模式用亮朱砂 #E5865E，避免暗底暗红看不清）
+  static Color strongOf(BuildContext context) =>
+      Theme.of(context).colorScheme.brightness == Brightness.dark ? darkPrimaryStrong : primaryStrong;
+
+  /// 主色淡底（跟随深浅色）
+  static Color softOf(BuildContext context) =>
+      Theme.of(context).colorScheme.brightness == Brightness.dark ? darkPrimarySoft : primarySoft;
   static const rule = Color(0xFFEADCCA);
   static const success = Color(0xFF1F9D6D);
   static const danger = Color(0xFFD84A44);

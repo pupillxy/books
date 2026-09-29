@@ -145,7 +145,8 @@ class _BookshelfPageState extends ConsumerState<BookshelfPage>
                   tooltip: '去书城添加',
                   onPressed: () => Navigator.of(context)
                       .push(MaterialPageRoute(builder: (_) => const StorePage())),
-                  icon: const Icon(Icons.add_circle_outline, color: MoStyle.ink2),
+                  icon: Icon(Icons.add_circle_outline,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant),
                 ),
               ]),
             ),

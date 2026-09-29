@@ -559,7 +559,7 @@ class _FilterChip extends StatelessWidget {
             style: TextStyle(
               fontSize: 12,
               height: 1,
-              color: selected ? MoStyle.primaryStrong : cs.onSurfaceVariant,
+              color: selected ? MoStyle.strongOf(context) : cs.onSurfaceVariant,
               fontWeight: selected ? FontWeight.w700 : FontWeight.w400,
             ),
           ),

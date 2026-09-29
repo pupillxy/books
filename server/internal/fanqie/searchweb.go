@@ -2,14 +2,19 @@ package fanqie
 
 // 网页端搜索：POST /api/author/search/search_book/v1（免签名、字段明文，2026-09-28 实测）。
 // 作为 App 源搜索的兜底（oracle 离线时仍可用）。
+// 风控注意：高频请求会触发番茄风控，返回 code!=0「参数有误」（非真实参数问题），
+// 因此除补全浏览器特征头外，对业务码失败做退避重试。
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 )
 
 // humanizeCount 数字转中文量级（14874 → "1.5万"）
@@ -24,27 +29,49 @@ func humanizeCount(n int) string {
 	}
 }
 
-// SearchWeb 网页端关键词搜索。offset 为条目偏移（内部换算 page_index）。
-func (c *Client) SearchWeb(keyword string, offset, count int) ([]LibraryBook, error) {
-	pageIndex := 0
-	if count > 0 {
-		pageIndex = offset / count
+// randomMSToken 生成仿浏览器的 msToken（116 位 base64url 字符 + '='）。
+// 网页版搜索请求固定携带 msToken + a_bogus 签名，缺失时更容易被风控拦截（返回「参数有误」）。
+func randomMSToken() string {
+	const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	b := make([]byte, 116)
+	for i := range b {
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(chars))))
+		if err != nil {
+			b[i] = chars[i%len(chars)]
+			continue
+		}
+		b[i] = chars[n.Int64()]
 	}
+	return string(b) + "="
+}
+
+// searchWebOnce 单次搜索请求（POST + msToken + a_bogus 签名，与网页版一致；
+// 该接口仅接受 POST，GET 返回空体）。上游间歇性风控返回 code!=0（消息形如
+// 「参数有误」，实为限流），此时返回可重试错误。
+func (c *Client) searchWebOnce(keyword string, pageIndex, count int) ([]LibraryBook, error) {
 	q := url.Values{}
 	q.Set("filter", "127,127,127,127")
 	q.Set("page_count", strconv.Itoa(count))
 	q.Set("page_index", strconv.Itoa(pageIndex))
 	q.Set("query_type", "0")
 	q.Set("query_word", keyword)
-	api := "https://fanqienovel.com/api/author/search/search_book/v1?" + q.Encode()
+	q.Set("msToken", randomMSToken())
+	query := q.Encode()
+	api := "https://fanqienovel.com/api/author/search/search_book/v1?" + query +
+		"&a_bogus=" + GenerateABogus(query, UAWeb)
 
 	req, err := http.NewRequest(http.MethodPost, api, nil)
 	if err != nil {
 		return nil, err
 	}
+	// 与 get() 相同的浏览器特征补全：裸 UA 请求在部分出口（如 NAS 容器）会被风控
 	req.Header.Set("User-Agent", UAWeb)
-	req.Header.Set("Referer", "https://fanqienovel.com/")
 	req.Header.Set("Accept", "application/json, text/plain, */*")
+	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
+	req.Header.Set("Referer", "https://fanqienovel.com/")
+	if c.Cookie != "" {
+		req.Header.Set("Cookie", strings.NewReplacer("\r", "", "\n", "").Replace(c.Cookie))
+	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return nil, err
@@ -105,4 +132,37 @@ func (c *Client) SearchWeb(keyword string, offset, count int) ([]LibraryBook, er
 		})
 	}
 	return books, nil
+}
+
+// SearchWeb 网页端关键词搜索。offset 为条目偏移（内部换算 page_index）。
+// 上游仅接受 page_count=10（其他值一律 code:-2「参数有误」，2026-09-30 实测），
+// 调用方传入更大 count 时按 10 拆页取回后截断。
+func (c *Client) SearchWeb(keyword string, offset, count int) ([]LibraryBook, error) {
+	if count <= 0 {
+		count = 10
+	}
+	pageIndex := offset / count
+	if count > 10 {
+		// 多于 10 条的请求：按 10 的页宽拉到足够覆盖，再截取前 count 条
+		pages := (count + 9) / 10
+		var out []LibraryBook
+		for p := 0; p < pages; p++ {
+			books, err := c.searchWebOnce(keyword, pageIndex+p, 10)
+			if err != nil {
+				if p == 0 {
+					return nil, err
+				}
+				break // 后续页失败不阻塞已取到的结果
+			}
+			out = append(out, books...)
+			if len(books) < 10 {
+				break
+			}
+		}
+		if len(out) > count {
+			out = out[:count]
+		}
+		return out, nil
+	}
+	return c.searchWebOnce(keyword, pageIndex, count)
 }

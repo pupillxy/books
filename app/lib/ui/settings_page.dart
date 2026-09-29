@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/api.dart';
+import '../core/appearance.dart';
 import '../core/mo_theme.dart';
 import '../core/session.dart';
 import '../models.dart';
@@ -99,6 +100,33 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     } on ApiException catch (e) {
       _toast(e.message);
     }
+  }
+
+  // ---------- 外观 ----------
+
+  /// 全局深浅色模式切换（持久化，立即生效）
+  Future<void> _pickAppearance() async {
+    final current = ref.read(appearanceProvider);
+    final mode = await showDialog<ThemeMode>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: const Text('外观'),
+        children: [
+          for (final e in const {
+            ThemeMode.system: '跟随系统',
+            ThemeMode.light: '浅色',
+            ThemeMode.dark: '深色',
+          }.entries)
+            RadioListTile<ThemeMode>(
+              value: e.key,
+              groupValue: current,
+              title: Text(e.value),
+              onChanged: (v) => Navigator.pop(ctx, v),
+            ),
+        ],
+      ),
+    );
+    if (mode != null) await ref.read(appearanceProvider.notifier).set(mode);
   }
 
   // ---------- 退出登录 ----------
@@ -204,21 +232,21 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                             Container(
                               padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
                               decoration: BoxDecoration(
-                                color: MoStyle.primarySoft,
+                                color: MoStyle.softOf(context),
                                 borderRadius: BorderRadius.circular(5),
                               ),
-                              child: const Text('管理员',
+                              child: Text('管理员',
                                   style: TextStyle(
                                       fontSize: 9.5,
                                       fontWeight: FontWeight.w700,
-                                      color: MoStyle.primaryStrong)),
+                                      color: MoStyle.strongOf(context))),
                             ),
                           ],
                         ],
                       ),
                       const SizedBox(height: 3),
                       Text('@${user.username}',
-                          style: const TextStyle(fontSize: 11.5, color: MoStyle.muted)),
+                          style: TextStyle(fontSize: 11.5, color: cs.outline)),
                     ],
                   ),
                 ),
@@ -252,6 +280,18 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
           const SizedBox(height: 16),
           // ---------- 菜单卡：通用 ----------
           _MenuCard(children: [
+            _MenuTile(
+              icon: Icons.brightness_6_outlined,
+              title: '外观',
+              subtitle: switch (ref.watch(appearanceProvider)) {
+                ThemeMode.light => '浅色',
+                ThemeMode.dark => '深色',
+                _ => '跟随系统',
+              },
+              cs: cs,
+              onTap: _pickAppearance,
+            ),
+            _divider(cs),
             _MenuTile(
               icon: Icons.dns_outlined,
               title: '服务器地址',
@@ -368,7 +408,7 @@ class _MenuTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = danger ? MoStyle.danger : MoStyle.ink2;
+    final color = danger ? MoStyle.danger : cs.onSurfaceVariant;
     return InkWell(
       onTap: onTap,
       child: Padding(

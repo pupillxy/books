@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../core/appearance.dart';
 import '../core/session.dart';
 import 'home_page.dart';
 import 'login_page.dart';
@@ -17,7 +18,10 @@ class _AppRootState extends ConsumerState<AppRoot> {
   @override
   void initState() {
     super.initState();
-    Future.microtask(() => ref.read(sessionProvider.notifier).restore());
+    Future.microtask(() {
+      ref.read(sessionProvider.notifier).restore();
+      ref.read(appearanceProvider.notifier).restore();
+    });
   }
 
   @override

@@ -106,10 +106,13 @@ class _DramaDetailPageState extends ConsumerState<DramaDetailPage> {
       onNotification: (n) => false,
       child: CustomScrollView(
         slivers: [
-          // ---------- 封面头 ----------
+          // ---------- 封面头（深色模式下用暗面板替代浅沙渐变）----------
           SliverToBoxAdapter(
             child: Container(
-              decoration: const BoxDecoration(gradient: MoStyle.detailHeaderGradient),
+              decoration: BoxDecoration(
+                gradient: dark ? null : MoStyle.detailHeaderGradient,
+                color: dark ? MoStyle.darkPanel : null,
+              ),
               child: SafeArea(
                 bottom: false,
                 child: Column(
@@ -123,18 +126,18 @@ class _DramaDetailPageState extends ConsumerState<DramaDetailPage> {
                           IconButton(
                             onPressed: () => Navigator.of(context).pop(),
                             icon: const Icon(Icons.arrow_back_rounded, size: 22),
-                            color: MoStyle.ink,
+                            color: MoStyle.inkOf(context),
                           ),
                           Expanded(
                             child: Text(
                               widget.title,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
+                              style: TextStyle(
                                   fontFamily: MoStyle.titleFont,
                                   fontSize: 16.5,
                                   fontWeight: FontWeight.w700,
-                                  color: MoStyle.ink),
+                                  color: MoStyle.inkOf(context)),
                             ),
                           ),
                         ],
@@ -151,7 +154,7 @@ class _DramaDetailPageState extends ConsumerState<DramaDetailPage> {
                             height: 164,
                             decoration: BoxDecoration(
                               borderRadius: BorderRadius.circular(14),
-                              boxShadow: MoStyle.shadowMd(MoStyle.ink),
+                              boxShadow: MoStyle.shadowMd(Colors.black),
                             ),
                             child: BookCover(url: drama.cover, title: drama.title, radius: 14),
                           ),
@@ -164,17 +167,17 @@ class _DramaDetailPageState extends ConsumerState<DramaDetailPage> {
                                   drama.title,
                                   maxLines: 2,
                                   overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
+                                  style: TextStyle(
                                       fontFamily: MoStyle.titleFont,
                                       fontSize: 19,
                                       fontWeight: FontWeight.w800,
                                       height: 1.3,
-                                      color: MoStyle.ink),
+                                      color: MoStyle.inkOf(context)),
                                 ),
                                 const SizedBox(height: 8),
                                 Text('$countText · $statusText',
-                                    style: const TextStyle(
-                                        fontSize: 12.5, color: MoStyle.ink2)),
+                                    style: TextStyle(
+                                        fontSize: 12.5, color: MoStyle.ink2Of(context))),
                                 if (drama.score.isNotEmpty) ...[
                                   const SizedBox(height: 4),
                                   Row(
@@ -183,18 +186,18 @@ class _DramaDetailPageState extends ConsumerState<DramaDetailPage> {
                                           size: 15, color: MoStyle.star),
                                       const SizedBox(width: 2),
                                       Text(drama.score,
-                                          style: const TextStyle(
+                                          style: TextStyle(
                                               fontSize: 12.5,
                                               fontWeight: FontWeight.w700,
-                                              color: MoStyle.ink2)),
+                                              color: MoStyle.ink2Of(context))),
                                     ],
                                   ),
                                 ],
                                 if (drama.playCount.isNotEmpty) ...[
                                   const SizedBox(height: 2),
                                   Text('${drama.playCount}次播放',
-                                      style: const TextStyle(
-                                          fontSize: 11.5, color: MoStyle.muted)),
+                                      style: TextStyle(
+                                          fontSize: 11.5, color: cs.outline)),
                                 ],
                               ],
                             ),

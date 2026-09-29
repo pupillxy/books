@@ -10,7 +10,7 @@ import '../models.dart';
 import 'reader_page.dart';
 import 'widgets.dart';
 
-/// 在线书详情：渐变封面区 + 入库/下载/阅读 + 简介/章节预览 Tab
+/// 在线书详情：渐变封面区 + 手动加入书架（入库后自动整本下载）/阅读 + 简介/章节预览 Tab
 class StoreBookDetailPage extends ConsumerStatefulWidget {
   const StoreBookDetailPage({super.key, required this.fanqieId, required this.title});
 
@@ -33,7 +33,7 @@ class _StoreBookDetailPageState extends ConsumerState<StoreBookDetailPage> {
   @override
   void initState() {
     super.initState();
-    _load();
+    _load().then((_) => _ensureDownloading());
   }
 
   @override
@@ -48,23 +48,27 @@ class _StoreBookDetailPageState extends ConsumerState<StoreBookDetailPage> {
       final d = await _api.storeBookDetail(widget.fanqieId);
       if (!mounted) return;
       setState(() => _detail = d);
-      // 进入详情页即自动入库 + 整本下载（每页仅首次）
-      if (!_autoTried) {
-        _autoTried = true;
-        _autoDownload();
-      }
     } on ApiException catch (e) {
       if (!mounted) return;
       setState(() => _error = e.message);
     }
   }
 
-  /// 自动入库+整本下载（后端幂等），随后轮询直至下载完成
-  Future<void> _autoDownload() async {
+  /// 进页即自动整本下载（仅入库+下载、不加书架；书架由用户手动加入，幂等）。
+  /// 已在下载中/已全文就绪时不重复触发。
+  Future<void> _ensureDownloading() async {
+    if (_autoTried) return;
+    _autoTried = true;
+    final d = _detail;
+    if (d == null) return;
+    if (d.status == 'ready' || d.downloadStatus == 'pending' || d.downloadStatus == 'running') {
+      _startPoll();
+      return;
+    }
     try {
-      await _api.storeAutoDownload(widget.fanqieId);
+      await _api.storeAutoDownload(widget.fanqieId, addShelf: false);
     } on ApiException {
-      // 静默：页面仍可浏览，底部提示会说明原因
+      // 静默：页面仍可浏览免费章节，底部提示会说明原因
     }
     if (!mounted) return;
     await _load();
@@ -78,7 +82,7 @@ class _StoreBookDetailPageState extends ConsumerState<StoreBookDetailPage> {
       final done = d == null ||
           d.status == 'ready' ||
           d.downloadStatus == 'failed' ||
-          (d.downloadStatus.isEmpty && d.status == 'online');
+          d.downloadStatus == 'disabled';
       if (done) {
         _poll?.cancel();
         _poll = null;
@@ -94,14 +98,53 @@ class _StoreBookDetailPageState extends ConsumerState<StoreBookDetailPage> {
         SnackBar(content: Text(msg), behavior: SnackBarBehavior.floating));
   }
 
-  /// 兜底手动入库（正常流程进入页面时 auto 接口已自动处理）
+  /// 手动加入书架（入库/下载已在进页时自动处理，这里幂等补书架 + 补触发下载）
   Future<void> _addToLibrary() async {
     if (_busy || _detail == null) return;
     setState(() => _busy = true);
     try {
-      await _api.storeAddBook(widget.fanqieId);
+      await _api.storeAutoDownload(widget.fanqieId, addShelf: true);
       await _load();
-      _toast('已加入书库');
+      _startPoll();
+      if (!mounted) return;
+      _toast('已加入书架');
+    } on ApiException catch (e) {
+      _toast(e.message);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// 免费阅读：不进书架直接看（进页自动入库后可读免费章；未就绪时先补一次入库）
+  Future<void> _openFreeRead() async {
+    final d = _detail;
+    if (d == null) return;
+    if (d.bookId <= 0) {
+      try {
+        await _api.storeAutoDownload(widget.fanqieId, addShelf: false);
+      } on ApiException catch (e) {
+        _toast(e.message);
+        return;
+      }
+      await _load();
+      if (!mounted) return;
+      if (_detail == null || _detail!.bookId <= 0) {
+        _toast('书籍准备中，请稍后再试');
+        return;
+      }
+    }
+    await _openReader();
+  }
+
+  /// 已入库但整本下载失败时的手动重试
+  Future<void> _retryDownload() async {
+    if (_busy || _detail == null) return;
+    setState(() => _busy = true);
+    try {
+      await _api.storeAutoDownload(widget.fanqieId, addShelf: false);
+      await _load();
+      _startPoll();
+      if (mounted) _toast('已重新开始下载');
     } on ApiException catch (e) {
       _toast(e.message);
     } finally {
@@ -156,11 +199,7 @@ class _StoreBookDetailPageState extends ConsumerState<StoreBookDetailPage> {
     final inLib = d.inLibrary;
     final busy = _busy;
     const headerH = 182.0;
-    // 全文就绪：展示全部章节；否则只展示到收费前一章（免费章）
     final fullyDownloaded = d.status == 'ready';
-    final cut = d.chapters.indexWhere((c) => !c.isFree);
-    final previewChapters =
-        fullyDownloaded || cut < 0 ? d.chapters : d.chapters.sublist(0, cut);
 
     return DefaultTabController(
       length: 2,
@@ -205,25 +244,45 @@ class _StoreBookDetailPageState extends ConsumerState<StoreBookDetailPage> {
           ],
           body: Column(
             children: [
-              // ---------- 按钮区（进入详情页已自动整本下载，无需手动下载按钮） ----------
+              // ---------- 按钮区：进页已自动下载；未入库时左「免费阅读」+ 右「加入书架」 ----------
               Padding(
                 padding: const EdgeInsets.fromLTRB(18, 12, 18, 0),
-                child: SizedBox(
-                  width: double.infinity,
-                  child: GradientButton(
-                    label: inLib ? '开始阅读' : (busy ? '处理中…' : '加入书库并阅读'),
-                    icon: switch (d.status) {
-                      'downloading' => Icons.downloading_rounded,
-                      'ready' => Icons.download_done_rounded,
-                      _ => inLib ? Icons.menu_book_rounded : Icons.add_circle_outline,
-                    },
-                    onPressed: busy ? null : (inLib ? _openReader : _addToLibrary),
-                  ),
-                ),
+                child: inLib
+                    ? SizedBox(
+                        width: double.infinity,
+                        child: GradientButton(
+                          label: '开始阅读',
+                          icon: switch (d.status) {
+                            'downloading' => Icons.downloading_rounded,
+                            'ready' => Icons.download_done_rounded,
+                            _ => Icons.menu_book_rounded,
+                          },
+                          onPressed: busy ? null : _openReader,
+                        ),
+                      )
+                    : Row(
+                        children: [
+                          Expanded(
+                            child: GhostButton(
+                              label: '免费阅读',
+                              icon: Icons.menu_book_rounded,
+                              onPressed: _openFreeRead,
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: GradientButton(
+                              label: busy ? '处理中…' : '加入书架',
+                              icon: Icons.add_circle_outline,
+                              onPressed: busy ? null : _addToLibrary,
+                            ),
+                          ),
+                        ],
+                      ),
               ),
               const SizedBox(height: 10),
               // ---------- Tab ----------
-              MoTabBar(labels: const ['简介', '章节预览']),
+              MoTabBar(labels: const ['简介', '章节']),
               Expanded(
                 child: TabBarView(
                   children: [
@@ -238,39 +297,46 @@ class _StoreBookDetailPageState extends ConsumerState<StoreBookDetailPage> {
                         ),
                       ],
                     ),
-                    // 章节预览：免费章 + 末尾提示/下载入口
-                    previewChapters.isEmpty
-                        ? const EmptyView(icon: Icons.list_alt, title: '暂无免费章节')
+                    // 章节：免费章立即可读，其余在整本下载完成后解锁
+                    d.chapters.isEmpty
+                        ? const EmptyView(icon: Icons.list_alt, title: '暂无章节目录')
                         : ListView.builder(
                             padding: const EdgeInsets.only(bottom: 24),
-                            itemCount: previewChapters.length + 1,
+                            itemCount: d.chapters.length + 1,
                             itemBuilder: (context, i) {
-                              if (i == previewChapters.length) {
+                              if (i == d.chapters.length) {
                                 return _DownloadFooter(
                                   ready: fullyDownloaded,
                                   downloadStatus: d.downloadStatus,
+                                  onRetry: _retryDownload,
+                                  truncated: d.chapterCount > d.chapters.length,
                                 );
                               }
-                              final ch = previewChapters[i];
+                              final ch = d.chapters[i];
+                              final unlocked = fullyDownloaded || ch.isFree;
                               return ListTile(
                                 dense: true,
                                 visualDensity: VisualDensity.compact,
                                 contentPadding:
                                     const EdgeInsets.symmetric(horizontal: 22),
-                                enabled: inLib,
                                 title: Text(
                                   '${ch.index}. ${ch.title}',
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: TextStyle(
-                                      fontSize: 13.5, color: cs.onSurfaceVariant),
+                                      fontSize: 13.5,
+                                      color: unlocked
+                                          ? cs.onSurfaceVariant
+                                          : cs.outline.withValues(alpha: 0.55)),
                                 ),
-                                trailing: inLib
+                                trailing: unlocked
                                     ? Icon(Icons.chevron_right,
                                         size: 18, color: cs.outline)
                                     : Icon(Icons.lock_outline,
                                         size: 15, color: cs.outline.withValues(alpha: 0.6)),
-                                onTap: inLib ? () => _openReaderAt(ch.index - 1) : null,
+                                onTap: unlocked
+                                    ? () => _openReaderAt(ch.index - 1)
+                                    : () => _toast('下载完成后解锁该章节'),
                               );
                             },
                           ),
@@ -285,12 +351,21 @@ class _StoreBookDetailPageState extends ConsumerState<StoreBookDetailPage> {
   }
 }
 
-/// 免费章节列表末尾：自动下载状态提示（进入详情页即自动下载，无需按钮）
+/// 章节列表末尾：下载状态提示（进页已自动下载；失败给手动重试）
 class _DownloadFooter extends StatelessWidget {
-  const _DownloadFooter({required this.ready, required this.downloadStatus});
+  const _DownloadFooter({
+    required this.ready,
+    required this.downloadStatus,
+    this.onRetry,
+    this.truncated = false,
+  });
 
   final bool ready;
   final String downloadStatus;
+  final VoidCallback? onRetry;
+
+  /// 详情目录仅返回前 30 章时提示完整目录位置
+  final bool truncated;
 
   @override
   Widget build(BuildContext context) {
@@ -310,7 +385,7 @@ class _DownloadFooter extends StatelessWidget {
               child: CircularProgressIndicator(strokeWidth: 1.6)),
           const SizedBox(width: 8),
           Flexible(
-            child: Text('正在自动下载整本，完成后即可阅读全部章节',
+            child: Text('正在自动下载整本，完成后解锁全部章节',
                 textAlign: TextAlign.center, style: hintStyle),
           ),
         ],
@@ -319,16 +394,48 @@ class _DownloadFooter extends StatelessWidget {
       child = Text('下载完成，正在整理入库…',
           textAlign: TextAlign.center, style: hintStyle);
     } else if (downloadStatus == 'failed') {
-      child = Text('整本下载失败，重新进入本页可自动重试；当前可阅读免费章节',
-          textAlign: TextAlign.center, style: hintStyle);
+      child = Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Flexible(
+            child: Text('整本下载失败，当前可在线阅读免费章节',
+                textAlign: TextAlign.center, style: hintStyle),
+          ),
+          if (onRetry != null) ...[
+            const SizedBox(width: 8),
+          ],
+          if (onRetry != null)
+            InkWell(
+              onTap: onRetry,
+              borderRadius: BorderRadius.circular(8),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 2),
+                child: Text('点击重试',
+                    style: TextStyle(
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w700,
+                        color: Theme.of(context).colorScheme.primary)),
+              ),
+            ),
+        ],
+      );
     } else {
-      // 无任务：TND 未配置或未入库，兜底说明
+      // disabled / 无任务：TND 未配置
       child = Text('服务器未配置下载服务，当前仅可在线阅读免费章节',
           textAlign: TextAlign.center, style: hintStyle);
     }
     return Padding(
       padding: const EdgeInsets.fromLTRB(22, 10, 22, 8),
-      child: child,
+      child: Column(
+        children: [
+          child,
+          if (truncated) ...[
+            const SizedBox(height: 4),
+            Text('目录较长，仅展示前 30 章，其余可在阅读器内查看',
+                textAlign: TextAlign.center, style: hintStyle),
+          ],
+        ],
+      ),
     );
   }
 }

@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -10,8 +8,8 @@ import '../models.dart';
 import 'store_book_detail_page.dart';
 import 'widgets.dart';
 
-/// 书城真搜索（App 源：/store/app/search，经模拟器签名 oracle）
-/// oracle 未配置时该接口 400，页面展示错误并保留重试。
+/// 书城真搜索（网页端源）：点键盘搜索键/提交才搜索，不逐字自动触发
+/// 失败时页面展示错误并保留重试。
 class StoreSearchPage extends ConsumerStatefulWidget {
   const StoreSearchPage({super.key});
 
@@ -22,7 +20,6 @@ class StoreSearchPage extends ConsumerStatefulWidget {
 class _StoreSearchPageState extends ConsumerState<StoreSearchPage> {
   final _controller = TextEditingController();
   final _focus = FocusNode();
-  Timer? _debounce;
 
   final _books = <LibraryBook>[];
   bool _loading = false;
@@ -32,20 +29,20 @@ class _StoreSearchPageState extends ConsumerState<StoreSearchPage> {
   String _lastQuery = '';
   int _offset = 0;
 
-  static const _pageSize = 15;
+  // 上游搜索接口仅接受 page_count=10（其他值报参数错误），分页宽度必须固定为 10
+  static const _pageSize = 10;
 
   ApiClient get _api => ref.read(sessionProvider).api!;
 
   @override
   void dispose() {
-    _debounce?.cancel();
     _controller.dispose();
     _focus.dispose();
     super.dispose();
   }
 
+  /// 输入框清空时复位列表（搜索本身只在提交时触发）
   void _onChanged(String text) {
-    _debounce?.cancel();
     if (text.trim().isEmpty) {
       setState(() {
         _books.clear();
@@ -53,13 +50,12 @@ class _StoreSearchPageState extends ConsumerState<StoreSearchPage> {
         _loading = false;
         _lastQuery = '';
       });
-      return;
     }
-    _debounce = Timer(const Duration(milliseconds: 450), () => _search(text.trim(), fresh: true));
   }
 
   Future<void> _search(String query, {bool fresh = false}) async {
     if (_loading) return;
+    if (query.isEmpty) return;
     if (fresh) {
       _offset = 0;
       _lastQuery = query;
@@ -106,9 +102,8 @@ class _StoreSearchPageState extends ConsumerState<StoreSearchPage> {
     return Scaffold(
       body: Column(
         children: [
-          MoPinnedHeader(
-            child: const PageHeader(title: '搜索'),
-          ),
+          // 固定头部（本页无滚动吸顶需求，直接用 PageHeader，勿用 sliver 版 MoPinnedHeader）
+          const PageHeader(title: '搜索'),
           Padding(
             padding: const EdgeInsets.fromLTRB(18, 8, 18, 8),
             child: Container(
@@ -124,7 +119,7 @@ class _StoreSearchPageState extends ConsumerState<StoreSearchPage> {
                 textInputAction: TextInputAction.search,
                 onSubmitted: (v) => _search(v.trim(), fresh: true),
                 onChanged: _onChanged,
-                style: const TextStyle(fontSize: 13.5, color: MoStyle.ink),
+                style: TextStyle(fontSize: 13.5, color: MoStyle.inkOf(context)),
                 decoration: InputDecoration(
                   hintText: '搜索书名 / 作者',
                   hintStyle: TextStyle(fontSize: 13, color: cs.outline),

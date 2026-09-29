@@ -94,10 +94,10 @@ class ApiClient {
     }
   }
 
-  Future<T> _send<T>(String method, String path, {Map<String, dynamic>? data}) async {
+  Future<T> _send<T>(String method, String path, {Map<String, dynamic>? data, Map<String, dynamic>? query}) async {
     try {
       final r = await _dio.request(path,
-          data: data, options: Options(method: method));
+          data: data, queryParameters: query, options: Options(method: method));
       return r.data as T;
     } on DioException catch (e) {
       throw _fromDio(e);
@@ -274,9 +274,11 @@ class ApiClient {
         data: {'download': download});
   }
 
-  /// 详情页进入即自动入库 + 整本下载（幂等，已就绪/下载中直接返回当前状态）
-  Future<Map<String, dynamic>> storeAutoDownload(String fanqieId) async {
-    return await _send<Map<String, dynamic>>('POST', '/api/store/books/$fanqieId/auto');
+  /// 入库 + 整本下载（幂等，已就绪/下载中直接返回当前状态）。
+  /// [addShelf] 为 false 时仅入库+下载、不加入书架（详情页进页自动下载用）。
+  Future<Map<String, dynamic>> storeAutoDownload(String fanqieId, {bool addShelf = true}) async {
+    return await _send<Map<String, dynamic>>('POST', '/api/store/books/$fanqieId/auto',
+        query: {'shelf': addShelf ? 1 : 0});
   }
 
   Future<Map<String, dynamic>> storeTriggerDownload(String fanqieId) async {

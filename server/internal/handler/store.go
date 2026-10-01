@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -14,6 +16,7 @@ import (
 	"xiaoshuo/internal/middleware"
 	"xiaoshuo/internal/model"
 	"xiaoshuo/internal/tnd"
+	"xiaoshuo/internal/unidbg"
 )
 
 // StoreHandler 书城：榜单浏览、在线书入库、TND 下载管理
@@ -21,6 +24,7 @@ type StoreHandler struct {
 	DB  *database.DBStore
 	FQ  *fanqie.Client
 	TND *tnd.Client
+	UNI *unidbg.Client
 
 	// 番茄抓取结果短缓存：详情页的封面是带 x-signature 的签名 URL，每次抓取都重新
 	// 生成（主机/签名都会变）。App 下载期间每 3s 轮询本接口，URL 一变客户端图片
@@ -42,13 +46,57 @@ type storeDetailCacheEntry struct {
 	err      error // 非 nil 表示负缓存
 }
 
-// getBookDetail 详情抓取：/page/ 被风控限流时退回 reader 页兜底
+// getBookDetail 详情抓取：/page/ 被风控限流时退 reader 页兜底，再退 unidbg（App 协议）
 func (h *StoreHandler) getBookDetail(fid string) (*fanqie.BookDetail, error) {
 	detail, err := h.FQ.GetBookDetail(fid)
 	if err == nil {
 		return detail, nil
 	}
-	return h.FQ.GetBookDetailViaReader(fid)
+	detail, rerr := h.FQ.GetBookDetailViaReader(fid)
+	if rerr == nil {
+		return detail, nil
+	}
+	if d, uerr := h.uniBookDetail(fid); uerr == nil {
+		return d, nil
+	}
+	return nil, rerr
+}
+
+// uniBookDetail unidbg 兜底详情：目录接口附带 book_info
+func (h *StoreHandler) uniBookDetail(fid string) (*fanqie.BookDetail, error) {
+	info, err := h.UNI.BookInfo(fid)
+	if err != nil || info == nil {
+		return nil, fmt.Errorf("unidbg book_info: %w", err)
+	}
+	return &fanqie.BookDetail{
+		Title:    info.BookName,
+		Author:   info.Author,
+		Cover:    info.CoverURL,
+		Synopsis: info.Description,
+		Finished: info.CreationStatus == "1",
+	}, nil
+}
+
+// getChapters 目录：网页端优先，被风控时退 unidbg 目录（App 协议，数据同源）
+func (h *StoreHandler) getChapters(fid string) ([]fanqie.ChapterInfo, error) {
+	chapters, err := h.FQ.GetChapters(fid)
+	if err == nil {
+		return chapters, nil
+	}
+	if h.UNI.Enabled() {
+		if metas, uerr := h.UNI.Directory(fid); uerr == nil {
+			out := make([]fanqie.ChapterInfo, 0, len(metas))
+			for i, m := range metas {
+				idx := m.Index
+				if idx < 0 {
+					idx = i // chapter_index 缺失时按序补
+				}
+				out = append(out, fanqie.ChapterInfo{ID: m.ItemID, Index: idx + 1, Title: m.Title})
+			}
+			return out, nil
+		}
+	}
+	return nil, err
 }
 
 // cachedFanqieDetail 取详情+目录：成功缓存 5min，失败缓存 60s，TTL 内直接复用
@@ -67,7 +115,7 @@ func (h *StoreHandler) cachedFanqieDetail(fid string) (*fanqie.BookDetail, []fan
 	detail, err := h.getBookDetail(fid)
 	if err == nil {
 		var chapters []fanqie.ChapterInfo
-		chapters, err = h.FQ.GetChapters(fid)
+		chapters, err = h.getChapters(fid)
 		if err == nil {
 			h.detMu.Lock()
 			if h.detCache == nil {
@@ -313,6 +361,10 @@ func (h *StoreHandler) BookDetail(c *gin.Context) {
 		resp["in_library"] = true
 		resp["book_id"] = bk.ID
 		resp["status"] = bk.Status
+		// 书架是按用户的：进页自动入库不加书架，App 靠这个字段展示 加入书架/已在书架
+		if on, err := h.DB.IsOnShelf(middleware.UserID(c), bk.ID); err == nil {
+			resp["on_shelf"] = on
+		}
 	} else {
 		resp["in_library"] = false
 	}
@@ -398,7 +450,7 @@ func (h *StoreHandler) importOnline(fid string, userID int64, addShelf bool) (in
 	if err != nil {
 		return 0, "", err
 	}
-	chapters, err := h.FQ.GetChapters(fid)
+	chapters, err := h.getChapters(fid)
 	if err != nil {
 		return 0, "", err
 	}
@@ -442,18 +494,33 @@ func (h *StoreHandler) TriggerDownload(c *gin.Context) {
 }
 
 func (h *StoreHandler) triggerDownload(fid, title string, bookID int64) string {
-	if !h.TND.Enabled() {
-		return "disabled"
-	}
 	// 已有进行中的任务则幂等返回，避免重复触发
 	if task, err := h.DB.GetDownloadTask(fid); err == nil &&
 		(task.Status == "pending" || task.Status == "running") {
 		return task.Status
 	}
+	if !h.UNI.Enabled() && !h.TND.Enabled() {
+		return "disabled"
+	}
 	if err := h.DB.UpsertDownloadTask(fid, title, "pending"); err != nil {
 		return "failed"
 	}
 	_ = h.DB.SetBookStatus(bookID, "downloading")
+	if h.UNI.Enabled() {
+		// 自建 unidbg 下载器：SO 在 unidbg 内自算签名，批量拉正文增量回填 DB
+		go func() {
+			_ = h.DB.SetDownloadTaskStatus(fid, "running")
+			if err := h.UNI.DownloadBook(h.DB, bookID, fid, title); err != nil {
+				log.Printf("[unidbg] 整本下载失败 %s: %v", title, err)
+				_ = h.DB.SetDownloadTaskStatus(fid, "failed")
+				_ = h.DB.SetBookStatus(bookID, "online")
+				return
+			}
+			_ = h.DB.SetDownloadTaskStatus(fid, "ready")
+			_ = h.DB.SetBookStatus(bookID, "ready")
+		}()
+		return "pending"
+	}
 	go func() {
 		if err := h.TND.RequestDownload(fid, title); err != nil {
 			_ = h.DB.SetDownloadTaskStatus(fid, "failed")

@@ -19,6 +19,7 @@ type Config struct {
 	AdminPass    string
 	TNDURL       string // Tomato-Novel-Downloader 服务地址（NAS Docker），空=禁用
 	TNDPassword  string // TND Web UI 锁定密码（TOMATO_WEB_PASSWORD），未锁定留空
+	UnidbgURL    string // unidbg 签名服务地址（番茄海外版 SO 自算签名），空=禁用
 }
 
 func env(key, def string) string {
@@ -52,5 +53,6 @@ func Load() *Config {
 		AdminPass:    env("XS_ADMIN_PASS", "admin123"),
 		TNDURL:       env("XS_TND_URL", ""),
 		TNDPassword:  env("XS_TND_PASSWORD", ""),
+		UnidbgURL:    env("XS_UNIDBG_URL", ""),
 	}
 }

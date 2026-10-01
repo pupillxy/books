@@ -92,6 +92,47 @@ networks:
     name: book_default
 ```
 
+## fq-unidbg 服务（2026-10-02 新增：番茄小说 App 协议数据源）
+
+zero199901/fqnovel-unidbg（135★）：番茄海外版 SO 放进 unidbg 模拟执行，X-Helios/X-Medusa 由 SO 自算。
+**无需手机、无需安卓模拟器**，一个 Java 进程。验证记录见 `_reference/fqnovel-unidbg-src/VERIFY.md`。
+
+NAS 部署（源码已推到 `/volume2/docker/books/fq-unidbg-src/`）：
+
+```sh
+docker build -t fq-unidbg:latest /volume2/docker/books/fq-unidbg-src
+```
+
+compose.yaml 增加：
+
+```yaml
+  fq-unidbg:
+    image: fq-unidbg:latest
+    container_name: fq-unidbg
+    restart: unless-stopped
+    volumes:
+      - ./fq-unidbg/config:/app/config   # application.yml（设备信息）持久化，被风控时换设备
+    networks:
+      - tnd            # external: name: book_default（与 xiaoshuo-server 互通）
+```
+
+xiaoshuo-server 环境变量追加：
+
+```yaml
+      - XS_UNIDBG_URL=http://fq-unidbg:9999   # 留空则回退 TND/网页源
+```
+
+数据流变化：`/store/books/:id/auto|download` 优先走 unidbg 下载器（批量拉正文增量写 SQLite，
+支持断点续传），unidbg 未配置时回退 TND。搜索/详情/目录仍网页端优先，被风控时自动退
+unidbg（同源数据）。App 端零改动。
+
+运维要点（实测踩坑）：
+- 设备被标记（报「响应格式异常/空响应，请手动更新设备信息」）：`POST /api/device/register`
+  注册新设备后**必须重启容器**才生效（autoUpdateConfig 不一定落盘）。
+- IP 级限流：短时间高频请求后整个上游全挂（连搜索都 -1），冷却几十分钟自愈；
+  下载器已内置 3s/批 限速 + 断点续传，容器重启不丢进度。
+- 请求层自带 3 次退避重试（上游偶发 GZIP/格式抖动）。
+
 > **XS_FQ_ORACLE 已弃用**（2026-09-29 决策）：App 源/模拟器 oracle 方案已回退——要求 PC 或安卓设备 7×24 常驻（功耗/维护成本不划算），且 GitHub 无公开的纯服务端签名实现（fanqie-dl 关键部分 WIP 停更）。书城全部走网页端（书库近似榜单 + 网页搜索 `/api/store/search`）。完整探索档案保留在 `_reference/fqemu/` 与 `docs/番茄App协议接入方案.md`，若将来番茄开放接口或决定重启此路线可随时恢复（server 代码历史在 git 提交 039f167 之前）。
 
 ## 部署脚本

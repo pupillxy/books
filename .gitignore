@@ -29,3 +29,14 @@ _reference/mcp-server-fanqie/
 # 系统
 .DS_Store
 Thumbs.db
+
+# 本地研究档案：大文件与构建产物不入库（脚本/文档/代码照常）
+_reference/fqemu/stage1_73733/base.apk
+_reference/fqemu/stage1_73733/dumps_c/
+_reference/fqemu/stage1_73733/unidbg-run.log
+_reference/fqnovel-unidbg.zip
+_reference/fqnovel-unidbg/
+_reference/fqnovel-unidbg-src/target/
+_reference/fqnovel-unidbg-src/results/
+_reference/maven.zip
+_reference/maven-home/

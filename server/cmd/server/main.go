@@ -15,6 +15,7 @@ import (
 	"xiaoshuo/internal/middleware"
 	"xiaoshuo/internal/scanner"
 	"xiaoshuo/internal/tnd"
+	"xiaoshuo/internal/unidbg"
 )
 
 func main() {
@@ -67,10 +68,11 @@ func main() {
 	// 番茄网页端 Cookie（XS_FQ_COOKIE）：带登录态可绕过匿名风控限流，与 TND 批量下载共存
 	fqClient := fanqie.NewClient(os.Getenv("XS_FQ_COOKIE"))
 	tndClient := tnd.New(cfg.TNDURL, cfg.TNDPassword)
+	uniClient := unidbg.New(cfg.UnidbgURL) // unidbg 签名服务：番茄海外版 SO 自算签名
 	book := &handler.BookHandler{DB: store, Scanner: sc, FQ: fqClient}
 	shelf := &handler.ShelfHandler{DB: store}
 	progress := &handler.ProgressHandler{DB: store}
-	storeH := &handler.StoreHandler{DB: store, FQ: fqClient, TND: tndClient}
+	storeH := &handler.StoreHandler{DB: store, FQ: fqClient, TND: tndClient, UNI: uniClient}
 	handler.StartUpdater(storeH) // 每日追更：未完结的番茄书自动补章
 
 	api.POST("/auth/login", auth.Login)

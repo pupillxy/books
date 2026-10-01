@@ -20,7 +20,7 @@ func StartUpdater(h *StoreHandler) {
 }
 
 func (h *StoreHandler) updateOnce() {
-	if !h.TND.Enabled() {
+	if !h.TND.Enabled() && !h.UNI.Enabled() {
 		return // 未配置下载服务时静默跳过
 	}
 	books, err := h.DB.ListUnfinishedFanqieBooks()

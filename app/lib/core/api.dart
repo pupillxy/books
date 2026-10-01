@@ -230,6 +230,14 @@ class ApiClient {
         .toList();
   }
 
+  /// App 同源书城 feed（unidbg：实时热度排行榜等模块）
+  Future<List<FeedSection>> storeAppFeed() async {
+    final j = await _get<Map<String, dynamic>>('/api/store/appfeed');
+    return ((j['sections'] as List?) ?? const [])
+        .map((e) => FeedSection.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
   /// 书库分类树（gender: '1'=男生 '0'=女生，分组 label: 主分类/主题/角色/情节）
   Future<List<LibCategory>> storeLibraryCategories(String gender) async {
     final j = await _get<Map<String, dynamic>>('/api/store/library/categories',

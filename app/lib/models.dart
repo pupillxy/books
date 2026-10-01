@@ -568,3 +568,63 @@ class DramaHistoryItem {
         updatedAt: (j['updated_at'] ?? '') as String,
       );
 }
+
+/// App 同源书城 feed 的一个模块（如「排行榜」）
+class FeedSection {
+  final String title;
+  final String subtitle;
+  final List<FeedBook> books;
+
+  const FeedSection({required this.title, required this.subtitle, required this.books});
+
+  factory FeedSection.fromJson(Map<String, dynamic> j) => FeedSection(
+        title: (j['title'] ?? '') as String,
+        subtitle: (j['subtitle'] ?? '') as String,
+        books: ((j['books'] as List?) ?? const [])
+            .map((e) => FeedBook.fromJson(e as Map<String, dynamic>))
+            .toList(),
+      );
+}
+
+/// App 推荐流中的一本书
+class FeedBook {
+  final String id;
+  final String title;
+  final String author;
+  final String synopsis;
+  final String cover;
+  final bool finished;
+  final String readCount;
+  final String score;
+  final String rankScore;
+  final String category;
+  final String tags;
+
+  const FeedBook({
+    required this.id,
+    required this.title,
+    required this.author,
+    required this.synopsis,
+    required this.cover,
+    this.finished = false,
+    this.readCount = '',
+    this.score = '',
+    this.rankScore = '',
+    this.category = '',
+    this.tags = '',
+  });
+
+  factory FeedBook.fromJson(Map<String, dynamic> j) => FeedBook(
+        id: (j['id'] ?? '') as String,
+        title: (j['title'] ?? '') as String,
+        author: (j['author'] ?? '') as String,
+        synopsis: (j['synopsis'] ?? '') as String,
+        cover: (j['cover'] ?? '') as String,
+        finished: (j['finished'] ?? false) as bool,
+        readCount: (j['read_count'] ?? '') as String,
+        score: (j['score'] ?? '') as String,
+        rankScore: (j['rank_score'] ?? '') as String,
+        category: (j['category'] ?? '') as String,
+        tags: (j['tags'] ?? '') as String,
+      );
+}

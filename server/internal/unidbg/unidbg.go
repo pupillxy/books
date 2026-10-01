@@ -146,6 +146,34 @@ func (c *Client) getJSONOnce(path string, out any) error {
 	return nil
 }
 
+// postRaw POST JSON 并返回原始响应体（上游业务码由调用方自行解析）
+func (c *Client) postRaw(path string, req any) ([]byte, error) {
+	raw, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	var lastBody []byte
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 2 * time.Second)
+		}
+		resp, err := c.HTTP.Post(c.BaseURL+path, "application/json", bytes.NewReader(raw))
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			lastErr = fmt.Errorf("unidbg %s: HTTP %d", path, resp.StatusCode)
+			continue
+		}
+		return body, nil
+	}
+	return lastBody, lastErr
+}
+
 func (c *Client) postJSON(path string, req any, out any) error {
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
@@ -315,4 +343,155 @@ func (c *Client) DownloadBook(db *database.DBStore, bookID int64, fid, title str
 		return fmt.Errorf("未获取到任何正文")
 	}
 	return nil
+}
+
+// ─── App 书城 feed（bookmall/tab，与番茄 App 首页同源）────────────────
+
+// bookmallBusinessQuery bookmall/tab 的业务参数（公共设备参数由 unidbg 服务拼装）。
+// 取自 2026-09-29 真机抓包模板（_reference/fqemu/real_bookmall_url.txt），已按 App 格式编码。
+const bookmallBusinessQuery = `unlimited_short_series_change_type=0&last_search_query_from_rec=false&auth_aweme=false&migration_top_tab_enable=false&is_horizontal_screen=false&ecom_refresh_type=0&last_tab_index=0&page_entry_time=0&ecom_impression_start_time=0&video_tab_cold_start=0&stream_count=%5B%7B%22scene%22%3A%221%22%2C%22StreamCount%22%3A1%2C%22StreamType%22%3A%221%22%7D%5D&refresh_action_info=%7B%22has_active_refresh%22%3Afalse%2C%22refresh_type%22%3A3%7D&offset=0&tab_type=-1&pad_column_detail=0&is_video_feed_tab_first_request_cold_start=false&first_use_category_select=false&cold_start_is_double_gd=false&session_uuid=9452f513-4c3b-42c2-9ad1-8b8c1f6a97dd&classic_tab_style=v3&device_level=3&image_shrink_datas_str=W3siaW1hZ2VfdHlwZSI6MSwiaW1hZ2Vfd2lkdGgiOjUzOSwic2hyaW5rX3R5cGUiOjF9LHsiaW1h%0AZ2VfdHlwZSI6MiwiaW1hZ2Vfd2lkdGgiOjM1OSwic2hyaW5rX3R5cGUiOjJ9LHsiaW1hZ2VfdHlw%0AZSI6MywiaW1hZ2Vfd2lkdGgiOjEwNzksInNocmlua190eXBlIjozfSx7ImltYWdlX3R5cGUiOjQs%0AImltYWdlX3dpZHRoIjo5NCwic2hyaW5rX3R5cGUiOjR9XQ%3D%3D%0A&last_tab_type=2&enable_search_box_collapse=false&lore_tab_style=v5&book_id=0&extra=5&cold_start_session=0&auth_backward=true&bottom_tab_type_list=0%2C7%2C2%2C3%2C4&last_session_video_tab_type=0&unlimited_short_series_next_offset=0&client_fetch_unlimited_mode=1&bottom_tab_type=0&screen_width_px=1079&has_video_cache=false&landing_bottom_tab_type=0&disable_digg_stat=false&req_rank_category_id=0&pad_column_cover=0&tab_index=0&req_rank_algo=0&biz_config_ctx_infos=eyJtIjp7IjAiOiIzIiwiMSI6IjU5MWQ4MGQ4MjI4ZmM1OWYiLCIyIjoiNmM3ZTc1OGUwZWM4YzM3ZCIsIjMiOiI0M2JkY2NkYTM5ODkxNzA1IiwiNCI6IjM2NjNlNDEyODgwNGU4NDEiLCI1IjoiYzAwN2I3OGJmMTBjZWM4YyIsIjYiOiJlNzkzYTlhZDQ3ODZiYzljIiwiNyI6IjciLCI4IjoiMjEiLCI5IjoiMTgiLCJBIjoiMTQiLCJCIjoiOCIsIkMiOiIxMyIsIkQiOiIzNiIsIkUiOiIxMyIsIkYiOiIyMyIsImEiOiIxMiIsImIiOiIyMSIsImMiOiIyNyIsImQiOiI4OCIsImUiOiIzMiIsImYiOiIxMTkiLCJnIjoiNDgiLCJoIjoiOSIsImkiOiIxMiIsImoiOiIzNSIsImsiOiIyOCIsImwiOiIxOSIsIm0iOiIxNCIsIm4iOiIxMyIsIm8iOiIxMCIsInAiOiIyMSIsInEiOiI3OCIsInIiOiIxMTYiLCJzIjoiMTgiLCJ0IjoiMTE2IiwidSI6IjQwIiwidiI6IjczIiwidyI6IjExIiwieCI6IjM0IiwieSI6IjEwOCIsInoiOiIyNyJ9fQ%3D%3D&client_req_type=3&after_genre_preference_popup=0&ug_task_params=%7B%22operation_type%22%3A3%2C%22is_new_day%22%3Afalse%2C%22redpack_continue_show_days%22%3A0%2C%22open_card_continue_not_click_days%22%3A0%2C%22is_first_launch%22%3Afalse%2C%22redpack_launch_show_count%22%3A0%2C%22open_card_daily_show_count%22%3A0%2C%22last_cold_start_diff_days%22%3A0%7D&normal_session_cnt_in_day=12&cold_start_session_cnt_in_day=7&sys_mini_window=0&app_mini_window=0&normal_session_id=7378f888-5905-4d2b-ab75-389fd4d18d4a%230&har_status=0&cold_start_session_id=5d0d31b1-9609-4b27-b008-cb44a184b021&cold_start_session_cnt_in_life=7&charging=0&normal_session_cnt_in_life=12&is_power_save_mode=0&app_dark_mode=0&screen_brightness=1&battery_pct=0&down_speed=4300&sys_dark_mode=0&font_scale=100&network_type=1&current_volume=1&recommend_extra=eyJyZWNlbnRfZGlzbGlrZV9naWQiOltdLCJzZXNzaW9uX2FwcF9zdGF5X3RpbWUiOjB9%0A`
+
+// FeedBook App 推荐流中的一本书
+type FeedBook struct {
+	BookID     string `json:"book_id"`
+	BookName   string `json:"book_name"`
+	Author     string `json:"author"`
+	Abstract   string `json:"abstract"`
+	Category   string `json:"category"`
+	ThumbURL   string `json:"thumb_url"`
+	ReadCount  string `json:"read_count"`  // 形如 "3292人在读"
+	RankScore  string `json:"rank_score"`  // 形如 "9243万热度"
+	Score      string `json:"score"`
+	Tags       string `json:"tags"`
+	SerialNum  string `json:"serial_count"`
+	Finished   bool   `json:"finished"`
+}
+
+// FeedSection App 书城 feed 的一个模块（「排行榜」「猜你喜欢」等）
+type FeedSection struct {
+	Title    string     `json:"title"`
+	Subtitle string     `json:"subtitle,omitempty"`
+	Books    []FeedBook `json:"books"`
+}
+
+// HomeFeed 拉取 App 书城首页 feed（推荐 tab：排行榜 + 猜你喜欢等模块）。
+// 与番茄 App 同源——真实排行榜、个性化推荐流。
+func (c *Client) HomeFeed() ([]FeedSection, error) {
+	body, err := c.postRaw("/api/fqapp/fetch", map[string]string{
+		"path":  "/reading/bookapi/bookmall/tab/v",
+		"query": bookmallBusinessQuery,
+	})
+	if err != nil {
+		return nil, err
+	}
+	var env struct {
+		Code int             `json:"code"`
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		return nil, fmt.Errorf("feed 响应解析: %w", err)
+	}
+	if env.Code != 0 {
+		return nil, fmt.Errorf("feed 上游 code=%d", env.Code)
+	}
+	var data struct {
+		TabItem []struct {
+			Title    string `json:"title"`
+			CellData []struct {
+				CellName  string `json:"cell_name"`
+				CellAlias string `json:"cell_alias"`
+				CellData  []struct {
+					BookData []struct {
+						BookID      string `json:"book_id"`
+						BookName    string `json:"book_name"`
+						Author      string `json:"author"`
+						Abstract    string `json:"abstract"`
+						Category    string `json:"category"`
+						ThumbURL    string `json:"thumb_url"`
+						ReadCount   string `json:"read_count"`
+						RankScore   string `json:"rank_score"`
+						Score       string `json:"score"`
+						Tags        string `json:"tags"`
+						SerialCount string `json:"serial_count"`
+						Creation    string `json:"creation_status"`
+					} `json:"book_data"`
+				} `json:"cell_data"`
+			} `json:"cell_data"`
+		} `json:"tab_item"`
+	}
+	if err := json.Unmarshal(env.Data, &data); err != nil {
+		return nil, fmt.Errorf("feed 结构解析: %w", err)
+	}
+
+	// 取「推荐」tab（App 首页默认），退而求其次取第一个有 cell 的 tab
+	var tab *struct {
+		Title    string `json:"title"`
+		CellData []struct {
+			CellName  string `json:"cell_name"`
+			CellAlias string `json:"cell_alias"`
+			CellData  []struct {
+				BookData []struct {
+					BookID      string `json:"book_id"`
+					BookName    string `json:"book_name"`
+					Author      string `json:"author"`
+					Abstract    string `json:"abstract"`
+					Category    string `json:"category"`
+					ThumbURL    string `json:"thumb_url"`
+					ReadCount   string `json:"read_count"`
+					RankScore   string `json:"rank_score"`
+					Score       string `json:"score"`
+					Tags        string `json:"tags"`
+					SerialCount string `json:"serial_count"`
+					Creation    string `json:"creation_status"`
+				} `json:"book_data"`
+			} `json:"cell_data"`
+		} `json:"cell_data"`
+	}
+	for i := range data.TabItem {
+		if data.TabItem[i].Title == "推荐" && len(data.TabItem[i].CellData) > 0 {
+			tab = &data.TabItem[i]
+			break
+		}
+	}
+	if tab == nil {
+		for i := range data.TabItem {
+			if len(data.TabItem[i].CellData) > 0 {
+				tab = &data.TabItem[i]
+				break
+			}
+		}
+	}
+	if tab == nil {
+		return nil, fmt.Errorf("feed 中无可用 tab")
+	}
+
+	sections := make([]FeedSection, 0, len(tab.CellData))
+	for _, cell := range tab.CellData {
+		sec := FeedSection{Title: cell.CellName, Subtitle: cell.CellAlias, Books: []FeedBook{}}
+		for _, inner := range cell.CellData {
+			for _, b := range inner.BookData {
+				if b.BookID == "" || b.BookName == "" {
+					continue
+				}
+				sec.Books = append(sec.Books, FeedBook{
+					BookID:    b.BookID,
+					BookName:  b.BookName,
+					Author:    b.Author,
+					Abstract:  b.Abstract,
+					Category:  b.Category,
+					ThumbURL:  b.ThumbURL,
+					ReadCount: b.ReadCount,
+					RankScore: b.RankScore,
+					Score:     b.Score,
+					Tags:      b.Tags,
+					SerialNum: b.SerialCount,
+					Finished:  b.Creation == "1",
+				})
+			}
+		}
+		if len(sec.Books) > 0 {
+			sections = append(sections, sec)
+		}
+	}
+	return sections, nil
 }

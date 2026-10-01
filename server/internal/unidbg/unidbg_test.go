@@ -74,3 +74,29 @@ func truncate(s string, n int) string {
 	}
 	return s[:n] + "..."
 }
+
+// TestSmokeAppFeed 验证 App 书城首页 feed（推荐 tab：排行榜 + 猜你喜欢）
+func TestSmokeAppFeed(t *testing.T) {
+	c := New("http://127.0.0.1:9999")
+	client := *c.HTTP
+	client.Timeout = 2 * time.Second
+	if _, err := client.Get(c.BaseURL + "/api/fq-signature/health"); err != nil {
+		t.Skipf("unidbg 服务未启动: %v", err)
+	}
+	secs, err := c.HomeFeed()
+	if err != nil {
+		t.Skipf("上游 feed 不可用: %v", err)
+	}
+	if len(secs) == 0 {
+		t.Fatal("feed 无模块")
+	}
+	total := 0
+	for _, s := range secs {
+		total += len(s.Books)
+		t.Logf("模块 %q (%q): %d 本, 首本 %q / %s / %s",
+			s.Title, s.Subtitle, len(s.Books), s.Books[0].BookName, s.Books[0].Author, s.Books[0].ReadCount)
+	}
+	if total < 10 {
+		t.Fatalf("feed 书目过少: %d", total)
+	}
+}

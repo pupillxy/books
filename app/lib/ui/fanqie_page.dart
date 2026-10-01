@@ -34,8 +34,23 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
   final Set<String> _loadingKeys = {};
   String? _booksError;
 
-  String get _boardKey =>
-      _boards.isEmpty ? '' : _boards[_boardIdx.clamp(0, _boards.length - 1)].key;
+  List<FeedSection> _feedSections = const [];
+  bool _feedLoading = false;
+  String? _feedError;
+
+  /// 展示用板块：第 0 位固定为 App 同源推荐流，其后为网页近似榜单
+  List<FeaturedBoard> get _displayBoards => [
+        const FeaturedBoard(key: 'appfeed', name: 'APP·推荐'),
+        ..._boards,
+      ];
+
+  String get _boardKey {
+    if (_boardIdx == 0) return 'appfeed';
+    final i = _boardIdx - 1;
+    if (_boards.isEmpty || i >= _boards.length) return '';
+    return _boards[i].key;
+  }
+
   String get _cacheKey => '$_boardKey|$_gender';
 
   @override
@@ -68,6 +83,28 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
   }
 
   Future<void> _loadBooks() async {
+    if (_boardKey == 'appfeed') {
+      if (_feedSections.isNotEmpty || _feedLoading) return;
+      setState(() {
+        _feedLoading = true;
+        _feedError = null;
+      });
+      try {
+        final secs = await _api.storeAppFeed();
+        if (!mounted) return;
+        setState(() {
+          _feedSections = secs;
+          _feedLoading = false;
+        });
+      } on ApiException catch (e) {
+        if (!mounted) return;
+        setState(() {
+          _feedLoading = false;
+          _feedError = e.message;
+        });
+      }
+      return;
+    }
     final key = _cacheKey;
     if (_boardKey.isEmpty || _booksCache.containsKey(key)) {
       setState(() {});
@@ -94,6 +131,7 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
 
   Future<void> _refresh() async {
     _booksCache.clear();
+    _feedSections = const [];
     await _loadBoards();
     await _loadBooks();
   }
@@ -202,6 +240,7 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
   }
 
   Widget _buildBody(BuildContext context) {
+    if (_boardKey == 'appfeed') return _buildFeedBody(context);
     if (_boardsLoading) return _buildSkeleton();
     if (_boardsError.isNotEmpty) {
       return ErrorRetry(message: _boardsError, onRetry: _loadBoards);
@@ -331,12 +370,12 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 16),
-        itemCount: _boards.length,
+        itemCount: _displayBoards.length,
         separatorBuilder: (context, index) => const SizedBox(width: 8),
         itemBuilder: (context, i) {
           final selected = i == _boardIdx;
           return ChoiceChip(
-            label: Text(_boards[i].name),
+            label: Text(_displayBoards[i].name),
             selected: selected,
             onSelected: (_) {
               setState(() => _boardIdx = i);
@@ -359,6 +398,38 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
 
   // ── 榜单列表（第 4 名起的行卡）────────────────────────────────────
   Widget _buildBoardList(BuildContext context) {
+    if (_boardKey == 'appfeed') {
+      if (_feedLoading) return _buildListSkeleton();
+      if (_feedError != null) {
+        return ErrorRetry(message: _feedError!, onRetry: _loadBooks);
+      }
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            for (final sec in _feedSections) ...[
+              if (sec.subtitle.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 14, bottom: 4),
+                  child: Text(sec.subtitle,
+                      style: TextStyle(
+                          fontSize: 12,
+                          color: Theme.of(context).colorScheme.outline)),
+                ),
+              for (var i = 0; i < sec.books.length; i++)
+                _FeedTile(
+                    book: sec.books[i],
+                    rank: sec.title == '排行榜' ? i + 1 : null,
+                    onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                        builder: (_) => StoreBookDetailPage(
+                            fanqieId: sec.books[i].id,
+                            title: sec.books[i].title)))),
+            ],
+          ],
+        ),
+      );
+    }
     final all = _booksCache[_cacheKey] ?? const <LibraryBook>[];
     if (_loadingKeys.contains(_cacheKey)) {
       return _buildListSkeleton();
@@ -382,6 +453,18 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
                 onTap: () => _openDetail(rest[i])),
         ],
       ),
+    );
+  }
+
+  // ── App 同源推荐流 ──────────────────────────────────────────────
+  Widget _buildFeedBody(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildTop3(context),
+        _buildBoardChips(context),
+        _buildBoardList(context),
+      ],
     );
   }
 
@@ -649,6 +732,103 @@ class _EntryCard extends StatelessWidget {
                 size: 18, color: Theme.of(context).colorScheme.outline),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// App 推荐流行卡：名次（排行榜模块）+ 封面 + 热度/在读
+class _FeedTile extends StatelessWidget {
+  const _FeedTile({required this.book, required this.onTap, this.rank});
+
+  final FeedBook book;
+  final int? rank;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final rankColor = (rank != null && rank! <= 3)
+        ? MoStyle.primaryStrong
+        : Theme.of(context).colorScheme.outline;
+    final metric = book.rankScore.isNotEmpty
+        ? book.rankScore
+        : (book.readCount.isNotEmpty ? book.readCount : book.score);
+    return InkWell(
+      borderRadius: BorderRadius.circular(12),
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Row(children: [
+          SizedBox(
+            width: 30,
+            child: Text(rank == null ? '·' : '$rank',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontFamily: MoStyle.titleFont,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800,
+                  fontStyle: FontStyle.italic,
+                  color: rankColor,
+                )),
+          ),
+          SizedBox(
+            width: 52,
+            child: AspectRatio(
+                aspectRatio: 3 / 4,
+                child: BookCover(
+                    url: book.cover.isEmpty ? null : book.cover,
+                    title: book.title,
+                    cacheWidth: 200)),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(book.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        fontFamily: MoStyle.titleFont,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600)),
+                const SizedBox(height: 3),
+                Row(children: [
+                  Flexible(
+                    child: Text(book.author,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                            fontSize: 12,
+                            color: Theme.of(context).colorScheme.outline)),
+                  ),
+                  if (metric.isNotEmpty) ...[
+                    Text(' · ',
+                        style: TextStyle(
+                            fontSize: 12,
+                            color: Theme.of(context).colorScheme.outline)),
+                    Text(metric,
+                        style: TextStyle(
+                            fontSize: 12, color: MoStyle.strongOf(context))),
+                  ],
+                ]),
+              ],
+            ),
+          ),
+          if (book.finished)
+            Container(
+              margin: const EdgeInsets.only(left: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(5),
+              ),
+              child: Text('完结',
+                  style: TextStyle(
+                      fontSize: 10,
+                      color: Theme.of(context).colorScheme.outline)),
+            ),
+        ]),
       ),
     );
   }

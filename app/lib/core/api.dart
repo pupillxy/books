@@ -321,10 +321,13 @@ class ApiClient {
         .toList();
   }
 
-  /// tag 为二级筛选（格式 dim|id，如 category_dim_theme|xxx），可选
-  Future<DramaCatalogPage> dramaCatalog(String genre, {int offset = 0, String tag = ''}) async {
+  /// tag 为二级筛选（格式 dim|id，如 category_dim_theme|xxx），可选；
+  /// gender 为频道筛选（"1"=男频 "0"=女频，空=不限），可选
+  Future<DramaCatalogPage> dramaCatalog(String genre,
+      {int offset = 0, String tag = '', String gender = ''}) async {
     final q = <String, dynamic>{'genre': genre, 'offset': offset};
     if (tag.isNotEmpty) q['tag'] = tag;
+    if (gender.isNotEmpty) q['gender'] = gender;
     final j = await _get<Map<String, dynamic>>('/api/drama/catalog', query: q);
     _absCoverList(j['items']);
     return DramaCatalogPage.fromJson(j);

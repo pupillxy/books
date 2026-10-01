@@ -58,20 +58,38 @@ func (c *Client) ResolveMedia(ctx context.Context, seriesID, videoID string) ([]
 			if apiErr != nil {
 				return nil, fmt.Errorf("App 取流失败：%v；网页取流失败：%v；备用取流失败：%w", appErr, pageErr, apiErr)
 			}
-			cacheMedia(c, cacheKey, media)
-			return media, nil
+			return cacheMedia(c, cacheKey, media), nil
 		}
-		cacheMedia(c, cacheKey, media)
-		return media, nil
+		return cacheMedia(c, cacheKey, media), nil
 	}
-	cacheMedia(c, cacheKey, media)
-	return media, nil
+	return cacheMedia(c, cacheKey, media), nil
 }
 
-func cacheMedia(c *Client, key string, media []Media) {
+// cacheMedia 规范化后写入缓存，并返回规范化结果（调用方直接返回给上层）。
+func cacheMedia(c *Client, key string, media []Media) []Media {
+	media = normalizeMedia(media)
 	c.mu.Lock()
 	c.media[key] = mediaCache{media: media, expiresAt: time.Now().Add(mediaTTL)}
 	c.mu.Unlock()
+	return media
+}
+
+// normalizeMedia 按清晰度从高到低排序，并去掉同一清晰度的重复线路：
+// App 取流每个清晰度会同时返回 main/backup 多个地址，不去重的话
+// 客户端清晰度列表会出现 "1080p 1080p 720p 720p…" 这样的重复项。
+// 同清晰度多条候选时保留排序靠前的那条（selectAppMedia 已把 h264 排在同档前面）。
+func normalizeMedia(media []Media) []Media {
+	sort.SliceStable(media, func(i, j int) bool { return media[i].Quality > media[j].Quality })
+	out := media[:0]
+	seen := make(map[int]bool, len(media))
+	for _, m := range media {
+		if seen[m.Quality] {
+			continue
+		}
+		seen[m.Quality] = true
+		out = append(out, m)
+	}
+	return out
 }
 
 // ─── 一级：App 取流 ───────────────────────────────────────────────────

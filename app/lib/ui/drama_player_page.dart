@@ -49,7 +49,9 @@ class _DramaPlayerPageState extends ConsumerState<DramaPlayerPage> {
   int _cur = 0; // 当前集在 _eps 中的位置
   final Map<int, _Ep> _players = {};
 
-  int _stickyQuality = 0; // 清晰度选择跨集记忆
+  // 清晰度跨集记忆：存清晰度值（视频高度）而非下标，各集可选档位可能不同；
+  // 0 = 默认跟随最高清（服务端线路已按清晰度降序，下标 0 即最清晰）
+  int _stickyQualityValue = 0;
   bool _controlsVisible = true;
   bool _dragging = false; // 进度条拖动中
   DateTime _swipeResetAt = DateTime.fromMillisecondsSinceEpoch(0);
@@ -112,7 +114,7 @@ class _DramaPlayerPageState extends ConsumerState<DramaPlayerPage> {
         }
         if (!mounted || token != ep.token || !_players.containsKey(pos)) return;
         if (qualities.isEmpty) throw ApiException('没有可用的播放线路');
-        final qIdx = _stickyQuality.clamp(0, qualities.length - 1);
+        final qIdx = _resolveQualityIdx(qualities);
         final base = ref.read(sessionProvider).serverUrl;
         final b = base.endsWith('/') ? base.substring(0, base.length - 1) : base;
         c = VideoPlayerController.networkUrl(Uri.parse(b + qualities[qIdx].url));
@@ -248,11 +250,89 @@ class _DramaPlayerPageState extends ConsumerState<DramaPlayerPage> {
     if (!_controlsVisible) setState(() => _controlsVisible = true);
   }
 
+  // 把跨集记忆的清晰度值解析成当前集的线路下标：
+  // 默认（0）→ 最高清；否则精确匹配 → 找不到时取不低于所选的最接近档 → 再不行取最低档。
+  // 依赖服务端返回的线路已按清晰度降序排列。
+  int _resolveQualityIdx(List<DramaQuality> qualities) {
+    if (_stickyQualityValue <= 0 || qualities.isEmpty) return 0;
+    for (var i = 0; i < qualities.length; i++) {
+      if (qualities[i].quality == _stickyQualityValue) return i;
+    }
+    for (var i = 0; i < qualities.length; i++) {
+      if (qualities[i].quality <= _stickyQualityValue) return i;
+    }
+    return qualities.length - 1;
+  }
+
   Future<void> _switchQuality(int idx) async {
     final ep = _players[_cur];
-    if (ep == null || idx >= ep.qualities.length || idx == _stickyQuality) return;
-    setState(() => _stickyQuality = idx);
+    if (ep == null || idx < 0 || idx >= ep.qualities.length) return;
+    if (idx == _resolveQualityIdx(ep.qualities)) return; // 点的就是当前档（含默认最高清），不必重载
+    setState(() => _stickyQualityValue = ep.qualities[idx].quality);
     await _ensure(_cur, retry: true);
+  }
+
+  // 清晰度点选：底部弹窗列出当前集全部档位，点选后无缝切换
+  void _showQualitySheet() {
+    final ep = _players[_cur];
+    if (ep == null || ep.qualities.isEmpty) return;
+    final qualities = ep.qualities;
+    final currentIdx = _resolveQualityIdx(qualities);
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: MoStyle.darkPanel,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => SafeArea(
+        top: false,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 16, 20, 4),
+              child: Text('清晰度',
+                  style: TextStyle(
+                      color: Colors.white70,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600)),
+            ),
+            for (var i = 0; i < qualities.length; i++)
+              InkWell(
+                onTap: () {
+                  Navigator.of(ctx).pop();
+                  _switchQuality(i);
+                },
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          qualities[i].name,
+                          style: TextStyle(
+                            color: i == currentIdx
+                                ? MoStyle.darkPrimary
+                                : Colors.white,
+                            fontSize: 15,
+                            fontWeight:
+                                i == currentIdx ? FontWeight.w700 : FontWeight.w400,
+                          ),
+                        ),
+                      ),
+                      if (i == currentIdx)
+                        const Icon(Icons.check_rounded,
+                            color: MoStyle.darkPrimary, size: 20),
+                    ],
+                  ),
+                ),
+              ),
+            const SizedBox(height: 6),
+          ],
+        ),
+      ),
+    );
   }
 
   String _fmt(Duration d) {
@@ -497,18 +577,17 @@ class _DramaPlayerPageState extends ConsumerState<DramaPlayerPage> {
                           },
                         ),
                       const SizedBox(height: 6),
-                      // 操作行：清晰度（上下集切换已改为滑动翻页）
+                      // 操作行：清晰度点选入口（点当前档位弹出底部选择面板）
                       Row(
                         mainAxisAlignment: MainAxisAlignment.end,
                         children: [
-                          for (var i = 0; i < qualities.length; i++)
-                            Padding(
-                              padding: const EdgeInsets.only(left: 6),
-                              child: _QualityChip(
-                                label: qualities[i].name,
-                                selected: i == _stickyQuality,
-                                onTap: () => _switchQuality(i),
-                              ),
+                          if (qualities.isNotEmpty)
+                            _QualityChip(
+                              label:
+                                  qualities[_resolveQualityIdx(qualities)].name,
+                              selected: true,
+                              showArrow: true,
+                              onTap: _showQualitySheet,
                             ),
                         ],
                       ),
@@ -526,11 +605,17 @@ class _DramaPlayerPageState extends ConsumerState<DramaPlayerPage> {
 }
 
 class _QualityChip extends StatelessWidget {
-  const _QualityChip({required this.label, required this.selected, required this.onTap});
+  const _QualityChip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+    this.showArrow = false,
+  });
 
   final String label;
   final bool selected;
   final VoidCallback onTap;
+  final bool showArrow; // 带上箭头表示点击可展开清晰度面板
 
   @override
   Widget build(BuildContext context) {
@@ -542,13 +627,23 @@ class _QualityChip extends StatelessWidget {
           color: selected ? MoStyle.darkPrimary : Colors.white24,
           borderRadius: BorderRadius.circular(20),
         ),
-        child: Text(
-          label,
-          style: TextStyle(
-            fontSize: 12,
-            fontWeight: FontWeight.w600,
-            color: selected ? Colors.white : Colors.white70,
-          ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: selected ? Colors.white : Colors.white70,
+              ),
+            ),
+            if (showArrow) ...[
+              const SizedBox(width: 2),
+              const Icon(Icons.expand_less,
+                  size: 14, color: Colors.white),
+            ],
+          ],
         ),
       ),
     );

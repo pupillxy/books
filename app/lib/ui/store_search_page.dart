@@ -109,7 +109,7 @@ class _StoreSearchPageState extends ConsumerState<StoreSearchPage> {
             child: Container(
               height: 42,
               decoration: BoxDecoration(
-                color: cs.brightness == Brightness.dark ? MoStyle.darkInputFill : const Color(0xFFEEF2FB),
+                color: MoStyle.inputFillOf(context),
                 borderRadius: BorderRadius.circular(13),
               ),
               child: TextField(

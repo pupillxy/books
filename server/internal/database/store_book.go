@@ -318,6 +318,13 @@ func (s *DBStore) RemoveShelf(userID, bookID int64) error {
 	return err
 }
 
+// IsOnShelf 某用户书架是否已收录某本书（详情页据此展示 加入书架/已在书架）
+func (s *DBStore) IsOnShelf(userID, bookID int64) (bool, error) {
+	var n int
+	err := s.QueryRow(`SELECT COUNT(1) FROM shelf WHERE user_id = ? AND book_id = ?`, userID, bookID).Scan(&n)
+	return n > 0, err
+}
+
 type ShelfItem struct {
 	Book          *model.Book `json:"book"`
 	ProgressChapter int       `json:"progress_chapter_idx"`

@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/api.dart';
+import '../core/local_books.dart';
 import '../core/mo_theme.dart';
+import '../core/reader_source.dart';
 import '../core/session.dart';
 import '../models.dart';
 import 'book_detail_page.dart';
@@ -22,6 +24,8 @@ class _BookshelfPageState extends ConsumerState<BookshelfPage>
     with AutomaticKeepAliveClientMixin {
   List<ShelfItem>? _items;
   String? _error;
+  List<LocalBookMeta> _local = const []; // 本机书（只存设备，不参与服务端同步）
+  Map<String, int> _localProgress = const {}; // 本机书 id → 已读章下标
 
   @override
   bool get wantKeepAlive => true;
@@ -30,6 +34,7 @@ class _BookshelfPageState extends ConsumerState<BookshelfPage>
 
   Future<void> _load() async {
     setState(() => _error = null);
+    _loadLocal();
     try {
       final items = await _api.shelf();
       if (!mounted) return;
@@ -38,6 +43,22 @@ class _BookshelfPageState extends ConsumerState<BookshelfPage>
       if (!mounted) return;
       setState(() => _error = e.message);
     }
+  }
+
+  // 本机书列表独立加载：失败不阻塞服务端书架，只影响本机区块
+  Future<void> _loadLocal() async {
+    try {
+      final local = await LocalBookService.instance.list();
+      final progress = <String, int>{};
+      for (final m in local) {
+        progress[m.id] = await LocalBookService.instance.progressOf(m.id);
+      }
+      if (!mounted) return;
+      setState(() {
+        _local = local;
+        _localProgress = progress;
+      });
+    } catch (_) {}
   }
 
   @override
@@ -68,6 +89,137 @@ class _BookshelfPageState extends ConsumerState<BookshelfPage>
       ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(e.message), behavior: SnackBarBehavior.floating));
     }
+  }
+
+  // ---------- 本机书 ----------
+
+  void _openLocal(LocalBookMeta m) async {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator()),
+    );
+    try {
+      final content = await LocalBookService.instance.open(m.id);
+      final progress = await LocalBookService.instance.progressOf(m.id);
+      if (!mounted) return;
+      Navigator.of(context).pop(); // 关 loading
+      await Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => ReaderPage(
+          book: localBookAsBook(m),
+          initialChapter:
+              content.chapterCount > 0 ? progress.clamp(0, content.chapterCount - 1) : 0,
+          source: LocalReaderSource(content),
+        ),
+      ));
+      _loadLocal();
+    } catch (e) {
+      if (!mounted) return;
+      Navigator.of(context).pop();
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('打开失败：$e'), behavior: SnackBarBehavior.floating));
+    }
+  }
+
+  Future<void> _importLocal() async {
+    try {
+      final meta = await LocalBookService.instance.importTxt();
+      if (meta == null || !mounted) return; // 用户取消
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('已导入《${meta.title}》· ${meta.chapterCount} 章（仅本机）'),
+          behavior: SnackBarBehavior.floating));
+      _loadLocal();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('导入失败：$e'), behavior: SnackBarBehavior.floating));
+    }
+  }
+
+  Future<void> _deleteLocal(LocalBookMeta m) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('删除本机书'),
+        content: Text('《${m.title}》只存在这台设备上，删除后无法恢复。'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: TextButton.styleFrom(foregroundColor: MoStyle.danger),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await LocalBookService.instance.delete(m.id);
+    _loadLocal();
+  }
+
+  void _showLocalActions(LocalBookMeta m) {
+    showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      builder: (sheet) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.play_arrow_rounded),
+              title: Text('继续阅读：${m.title}'),
+              subtitle: Text('${m.chapterCount} 章 · 仅存本机'),
+              onTap: () {
+                Navigator.pop(sheet);
+                _openLocal(m);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.delete_outline, color: MoStyle.danger),
+              title: const Text('删除本机书', style: TextStyle(color: MoStyle.danger)),
+              onTap: () {
+                Navigator.pop(sheet);
+                _deleteLocal(m);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // 「添加书籍」入口：书城 / 导入本地 TXT
+  void _showAddSheet() {
+    showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      builder: (sheet) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.storefront_outlined),
+              title: const Text('去书城添加'),
+              subtitle: const Text('在线书，进度云同步'),
+              onTap: () {
+                Navigator.pop(sheet);
+                Navigator.of(context)
+                    .push(MaterialPageRoute(builder: (_) => const StorePage()));
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.upload_file_outlined),
+              title: const Text('导入本地 TXT'),
+              subtitle: const Text('仅存本机，不云同步'),
+              onTap: () {
+                Navigator.pop(sheet);
+                _importLocal();
+              },
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   void _showActions(ShelfItem item) {
@@ -150,13 +302,13 @@ class _BookshelfPageState extends ConsumerState<BookshelfPage>
                 ),
               ]),
             ),
-            if (items.isEmpty)
+            if (items.isEmpty && _local.isEmpty)
               SliverFillRemaining(
                 hasScrollBody: false,
                 child: EmptyView(
                   icon: Icons.collections_bookmark_outlined,
                   title: '书架还是空的',
-                  subtitle: '去「书城」找一本书加入书架吧',
+                  subtitle: '去「书城」找一本书，或导入本地 TXT',
                 ),
               )
             else ...[
@@ -197,7 +349,7 @@ class _BookshelfPageState extends ConsumerState<BookshelfPage>
                   ),
                 ),
               ),
-              // ---------- 书网格（3 列 + 添加卡）----------
+              // ---------- 书网格（3 列：服务端书 + 本机书 + 添加卡）----------
               SliverPadding(
                 padding: const EdgeInsets.fromLTRB(18, 2, 18, 24),
                 sliver: SliverGrid.builder(
@@ -207,19 +359,27 @@ class _BookshelfPageState extends ConsumerState<BookshelfPage>
                     crossAxisSpacing: 12,
                     childAspectRatio: 0.52,
                   ),
-                  itemCount: items.length + 1,
+                  itemCount: items.length + _local.length + 1,
                   itemBuilder: (context, i) {
-                    if (i == items.length) {
-                      return _AddCard(onTap: () => Navigator.of(context)
-                          .push(MaterialPageRoute(builder: (_) => const StorePage())));
+                    if (i == items.length + _local.length) {
+                      return _AddCard(onTap: _showAddSheet);
                     }
-                    final it = items[i];
-                    return _ShelfCard(
-                      item: it,
-                      baseUrl: baseUrl,
-                      onTap: () => _openDetail(it.book),
-                      onLongPress: () => _showActions(it),
-                      onPlayTap: () => _openReader(it),
+                    if (i < items.length) {
+                      final it = items[i];
+                      return _ShelfCard(
+                        item: it,
+                        baseUrl: baseUrl,
+                        onTap: () => _openDetail(it.book),
+                        onLongPress: () => _showActions(it),
+                        onPlayTap: () => _openReader(it),
+                      );
+                    }
+                    final m = _local[i - items.length];
+                    return _LocalCard(
+                      meta: m,
+                      progress: _localProgress[m.id] ?? 0,
+                      onTap: () => _openLocal(m),
+                      onLongPress: () => _showLocalActions(m),
                     );
                   },
                 ),
@@ -433,6 +593,101 @@ class _ShelfCard extends StatelessWidget {
           const SizedBox(height: 2),
           Text(
             started ? '读到第 ${item.progressChapterIdx + 1} 章' : '未开始读',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 10.5,
+              fontWeight: FontWeight.w700,
+              color: started ? cs.primary : cs.outline,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 本机书卡片：渐变占位封面 + 「本机」角标（不访问服务端）
+class _LocalCard extends StatelessWidget {
+  const _LocalCard({
+    required this.meta,
+    required this.progress,
+    required this.onTap,
+    required this.onLongPress,
+  });
+
+  final LocalBookMeta meta;
+  final int progress; // 已读章下标，0 = 未开始
+  final VoidCallback onTap;
+  final VoidCallback onLongPress;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final started = progress > 0;
+    return InkWell(
+      onTap: onTap,
+      onLongPress: onLongPress,
+      borderRadius: BorderRadius.circular(10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  child: Container(
+                    decoration: const BoxDecoration(
+                      borderRadius: BorderRadius.all(Radius.circular(10)),
+                      boxShadow: [
+                        BoxShadow(
+                            color: Color(0x29A13F1E),
+                            blurRadius: 14,
+                            offset: Offset(0, 6)),
+                      ],
+                    ),
+                    child: BookCover(url: null, title: meta.title, radius: 10),
+                  ),
+                ),
+                Positioned(
+                  top: 0,
+                  right: 0,
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 6, vertical: 2.5),
+                    decoration: const BoxDecoration(
+                      color: Color(0x8C000000),
+                      borderRadius: BorderRadius.only(
+                        topRight: Radius.circular(10),
+                        bottomLeft: Radius.circular(10),
+                      ),
+                    ),
+                    child: const Text('本机',
+                        style: TextStyle(
+                            fontSize: 9,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.white,
+                            height: 1.3)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 6),
+          SizedBox(
+            height: 32,
+            child: Text(meta.title,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w600,
+                    color: MoStyle.inkOf(context),
+                    height: 1.35)),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            started ? '本机 · 读到第 ${progress + 1} 章' : '本机书 · 未开始读',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: TextStyle(

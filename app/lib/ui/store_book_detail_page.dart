@@ -197,6 +197,7 @@ class _StoreBookDetailPageState extends ConsumerState<StoreBookDetailPage> {
 
     final d = _detail!;
     final inLib = d.inLibrary;
+    final onShelf = d.onShelf;
     final busy = _busy;
     const headerH = 182.0;
     final fullyDownloaded = d.status == 'ready';
@@ -244,21 +245,37 @@ class _StoreBookDetailPageState extends ConsumerState<StoreBookDetailPage> {
           ],
           body: Column(
             children: [
-              // ---------- 按钮区：进页已自动下载；未入库时左「免费阅读」+ 右「加入书架」 ----------
+              // ---------- 按钮区：进页已自动入库下载；书架始终可操作 ----------
+              // 未入库：左「免费阅读」+ 右「加入书架」；
+              // 已入库：左「加入书架/已在书架」+ 右「开始阅读」（自动入库不加书架，按钮不能消失）
               Padding(
                 padding: const EdgeInsets.fromLTRB(18, 12, 18, 0),
                 child: inLib
-                    ? SizedBox(
-                        width: double.infinity,
-                        child: GradientButton(
-                          label: '开始阅读',
-                          icon: switch (d.status) {
-                            'downloading' => Icons.downloading_rounded,
-                            'ready' => Icons.download_done_rounded,
-                            _ => Icons.menu_book_rounded,
-                          },
-                          onPressed: busy ? null : _openReader,
-                        ),
+                    ? Row(
+                        children: [
+                          Expanded(
+                            child: GhostButton(
+                              label: onShelf ? '已在书架' : (busy ? '处理中…' : '加入书架'),
+                              icon: onShelf
+                                  ? Icons.check_circle_outline
+                                  : Icons.add_circle_outline,
+                              onPressed: onShelf || busy ? null : _addToLibrary,
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            flex: 2,
+                            child: GradientButton(
+                              label: '开始阅读',
+                              icon: switch (d.status) {
+                                'downloading' => Icons.downloading_rounded,
+                                'ready' => Icons.download_done_rounded,
+                                _ => Icons.menu_book_rounded,
+                              },
+                              onPressed: busy ? null : _openReader,
+                            ),
+                          ),
+                        ],
                       )
                     : Row(
                         children: [

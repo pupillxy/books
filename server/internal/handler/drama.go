@@ -176,15 +176,20 @@ func (h *DramaHandler) Genres(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"items": hongguo.Genres()})
 }
 
-// Catalog 目录（分页）；tag 为二级筛选（格式 dim|id，可选）
+// Catalog 目录（分页）；gender 为频道筛选（"1"=男频 "0"=女频，空=不限）；
+// tag 为二级筛选（格式 dim|id，可选）
 func (h *DramaHandler) Catalog(c *gin.Context) {
 	genre := c.Query("genre")
+	gender := c.Query("gender")
+	if gender != "0" && gender != "1" {
+		gender = ""
+	}
 	tag := c.Query("tag")
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 	if offset < 0 {
 		offset = 0
 	}
-	page, err := h.HG.Catalog(c.Request.Context(), genre, tag, offset)
+	page, err := h.HG.Catalog(c.Request.Context(), genre, gender, tag, offset)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return

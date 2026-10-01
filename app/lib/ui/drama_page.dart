@@ -9,7 +9,7 @@ import 'drama_detail_page.dart';
 import 'drama_history_page.dart';
 import 'widgets.dart';
 
-/// 短剧：红果短剧浏览（「墨笺」风：下划线分类 Tab + 竖版海报网格 + 搜索）
+/// 短剧：红果短剧浏览（「墨笺」风：下划线分类 Tab + 男频/女频频道栏 + 竖版海报网格 + 搜索）
 class DramaPage extends ConsumerStatefulWidget {
   const DramaPage({super.key});
 
@@ -23,6 +23,9 @@ class _DramaPageState extends ConsumerState<DramaPage> {
   String _genreKey = '';
   String _genreName = '';
 
+  // 频道筛选：'1'=男频 '0'=女频 ''=不限（跨形态记忆，切分类不清）
+  String _gender = '';
+
   // 二级筛选：_tag 格式 "dim|id"（与后端 select_items 维度对应），空 = 不限
   List<DramaFilterDim> _dims = const [];
   String _tag = '';
@@ -32,6 +35,11 @@ class _DramaPageState extends ConsumerState<DramaPage> {
   bool _loadingMore = false;
   bool _hasMore = true;
   String? _listError;
+
+  // 请求代序号：筛选条件变了就自增，过期响应直接丢弃。
+  // 上游是推荐流、响应有快有慢，快速切换 男频/女频/分类 时
+  // 慢的旧响应若晚到会覆盖新列表（表现为"选男频却出女频剧"）。
+  int _reqSeq = 0;
 
   // 搜索
   bool _searching = false;
@@ -75,13 +83,16 @@ class _DramaPageState extends ConsumerState<DramaPage> {
   }
 
   Future<void> _loadList() async {
+    final req = ++_reqSeq;
     setState(() {
       _loading = true;
+      _loadingMore = false; // 重置翻页态：在途的旧翻页响应已过期，丢弃后不会自己复位
       _listError = null;
     });
     try {
-      final page = await _api.dramaCatalog(_genreKey, offset: 0, tag: _tag);
-      if (!mounted) return;
+      final page =
+          await _api.dramaCatalog(_genreKey, offset: 0, tag: _tag, gender: _gender);
+      if (!mounted || req != _reqSeq) return; // 期间切换过筛选，响应已过期
       setState(() {
         _items
           ..clear()
@@ -97,7 +108,7 @@ class _DramaPageState extends ConsumerState<DramaPage> {
       });
       _precacheCovers();
     } on ApiException catch (e) {
-      if (!mounted) return;
+      if (!mounted || req != _reqSeq) return;
       setState(() {
         _loading = false;
         _listError = e.message;
@@ -110,9 +121,9 @@ class _DramaPageState extends ConsumerState<DramaPage> {
   void _precacheCovers() {
     if (!mounted) return;
     // 与 _DramaCard 的解码宽度保持一致（(屏宽-36-24)/3 × dpr），确保命中同一缓存键
-    final w =
-        ((MediaQuery.sizeOf(context).width - 18 * 2 - 12 * 2) / 3 * MediaQuery.devicePixelRatioOf(context))
-            .round();
+    final w = ((MediaQuery.sizeOf(context).width - 18 * 2 - 12 * 2) / 3 *
+            MediaQuery.devicePixelRatioOf(context))
+        .round();
     final n = _items.length < 18 ? _items.length : 18;
     for (var i = 0; i < n; i++) {
       final url = _items[i].cover;
@@ -126,17 +137,19 @@ class _DramaPageState extends ConsumerState<DramaPage> {
 
   Future<void> _loadMore() async {
     if (_loadingMore || !_hasMore || _loading || _searching) return;
+    final req = _reqSeq; // 翻页期间切了筛选就丢弃这批旧数据
     setState(() => _loadingMore = true);
     try {
-      final page = await _api.dramaCatalog(_genreKey, offset: _items.length, tag: _tag);
-      if (!mounted) return;
+      final page = await _api.dramaCatalog(_genreKey,
+          offset: _items.length, tag: _tag, gender: _gender);
+      if (!mounted || req != _reqSeq) return;
       setState(() {
         _items.addAll(page.items);
         _hasMore = page.hasMore;
         _loadingMore = false;
       });
     } on ApiException {
-      if (mounted) setState(() => _loadingMore = false);
+      if (mounted && req == _reqSeq) setState(() => _loadingMore = false);
     }
   }
 
@@ -144,6 +157,7 @@ class _DramaPageState extends ConsumerState<DramaPage> {
     final query = kw.trim();
     if (query.isEmpty) return;
     _searchFocus.unfocus();
+    final req = ++_reqSeq; // 连续搜索时丢弃旧响应
     setState(() {
       _searching = true;
       _searchLoading = true;
@@ -152,13 +166,13 @@ class _DramaPageState extends ConsumerState<DramaPage> {
     });
     try {
       final list = await _api.dramaSearch(query);
-      if (!mounted) return;
+      if (!mounted || req != _reqSeq) return;
       setState(() {
         _results.addAll(list);
         _searchLoading = false;
       });
     } on ApiException catch (e) {
-      if (!mounted) return;
+      if (!mounted || req != _reqSeq) return;
       setState(() {
         _searchLoading = false;
         _searchError = e.message;
@@ -178,6 +192,12 @@ class _DramaPageState extends ConsumerState<DramaPage> {
       _genreName = g.name;
       _tag = ''; // 换分类后二级筛选项不同，重置为不限
     });
+    _loadList();
+  }
+
+  void _selectGender(String v) {
+    if (v == _gender) return;
+    setState(() => _gender = v);
     _loadList();
   }
 
@@ -250,11 +270,20 @@ class _DramaPageState extends ConsumerState<DramaPage> {
     final cs = Theme.of(context).colorScheme;
     final screenW = MediaQuery.of(context).size.width;
     final cellW = (screenW - 18 * 2 - 12 * 2) / 3;
-    final extent = cellW / 0.72 + 44;
+    final extent = cellW / 0.72 + 60; // 固定区：6+33 标题 + 2+14 元信息行
 
     final items = _searching ? _results : _items;
     final loading = _searching ? _searchLoading : _loading;
     final error = _searching ? _searchError : _listError;
+
+    // 栏目标题右侧跟随频道状态
+    final sectionHint = _searching
+        ? '搜索结果'
+        : _gender == '1'
+            ? '男频精选'
+            : _gender == '0'
+                ? '女频精选'
+                : '为你精选';
 
     return Scaffold(
       body: NotificationListener<ScrollNotification>(
@@ -296,9 +325,7 @@ class _DramaPageState extends ConsumerState<DramaPage> {
                           height: 40,
                           padding: const EdgeInsets.symmetric(horizontal: 12),
                           decoration: BoxDecoration(
-                            color: cs.brightness == Brightness.dark
-                                ? MoStyle.darkInputFill
-                                : const Color(0xFFEEF2FB),
+                            color: MoStyle.inputFillOf(context),
                             borderRadius: BorderRadius.circular(13),
                           ),
                           child: Row(
@@ -367,6 +394,18 @@ class _DramaPageState extends ConsumerState<DramaPage> {
                     ),
                   ),
                 ),
+              // ---------- 频道栏：全部 / 男频 / 女频（搜索模式下隐藏） ----------
+              if (!_searching && _genres != null)
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(18, 4, 18, 2),
+                    child: Row(
+                      children: [
+                        _GenderBar(value: _gender, onChanged: _selectGender),
+                      ],
+                    ),
+                  ),
+                ),
               // ---------- 二级筛选（搜索模式下隐藏；无面板数据则整行不占位） ----------
               if (!_searching && _dims.isNotEmpty)
                 SliverToBoxAdapter(
@@ -387,6 +426,8 @@ class _DramaPageState extends ConsumerState<DramaPage> {
                   hasScrollBody: false,
                   child: ErrorRetry(message: _error!, onRetry: _loadGenres),
                 )
+              else if (loading && items.isEmpty && !_searching)
+                SliverToBoxAdapter(child: _DramaSkeletonGrid(cellW: cellW))
               else if (loading && items.isEmpty)
                 const SliverFillRemaining(
                   hasScrollBody: false,
@@ -419,7 +460,7 @@ class _DramaPageState extends ConsumerState<DramaPage> {
                                   color: MoStyle.inkOf(context))),
                           const SizedBox(width: 8),
                           Expanded(
-                            child: Text('为你精选',
+                            child: Text(sectionHint,
                                 style: TextStyle(fontSize: 11, color: cs.outline)),
                           ),
                         ],
@@ -460,7 +501,7 @@ class _DramaPageState extends ConsumerState<DramaPage> {
   }
 }
 
-/// 竖版海报卡：封面 + 集数角标 + 两行标题
+/// 竖版海报卡：封面（底部渐变压字：集数 + 评分；右上完结角标）+ 两行标题 + 元信息行
 class _DramaCard extends StatelessWidget {
   const _DramaCard({required this.drama, required this.cellW, required this.onTap});
 
@@ -470,6 +511,14 @@ class _DramaCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    // 元信息：分类 · 播放量（两者都可能为空）
+    final metaParts = <String>[
+      if (drama.category.isNotEmpty) drama.category,
+      if (drama.playCount.isNotEmpty) '${_formatCount(drama.playCount)}次播放',
+    ];
+    final meta = metaParts.join(' · ');
+
     return InkWell(
       borderRadius: BorderRadius.circular(12),
       onTap: onTap,
@@ -487,23 +536,59 @@ class _DramaCard extends StatelessWidget {
                   // 按格子实际显示宽度 × 像素密度解码，避免大图全量解码拖慢滚动
                   cacheWidth: (cellW * MediaQuery.devicePixelRatioOf(context)).round(),
                 ),
-                if (drama.remark.isNotEmpty)
+                // 底部渐变压字：左 集数（remark），右 评分
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  child: Container(
+                    padding: const EdgeInsets.fromLTRB(7, 14, 7, 6),
+                    decoration: const BoxDecoration(
+                      borderRadius: BorderRadius.vertical(bottom: Radius.circular(12)),
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [Colors.transparent, Colors.black54],
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            drama.remark,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                fontSize: 10, color: Colors.white, fontWeight: FontWeight.w600),
+                          ),
+                        ),
+                        if (drama.score.isNotEmpty) ...[
+                          const SizedBox(width: 4),
+                          const Icon(Icons.star_rounded, size: 11, color: MoStyle.star),
+                          const SizedBox(width: 1.5),
+                          Text(drama.score,
+                              style: const TextStyle(
+                                  fontSize: 10,
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w800)),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+                if (drama.finished)
                   Positioned(
-                    left: 6,
-                    bottom: 6,
+                    right: 5,
+                    top: 5,
                     child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                       decoration: BoxDecoration(
-                        color: Colors.black.withValues(alpha: 0.55),
-                        borderRadius: BorderRadius.circular(7),
+                        color: Colors.black.withValues(alpha: 0.5),
+                        borderRadius: BorderRadius.circular(6),
                       ),
-                      child: Text(
-                        drama.remark,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                            fontSize: 10, color: Colors.white, fontWeight: FontWeight.w600),
-                      ),
+                      child: const Text('已完结',
+                          style: TextStyle(
+                              fontSize: 9, color: Colors.white, fontWeight: FontWeight.w700)),
                     ),
                   ),
               ],
@@ -524,6 +609,196 @@ class _DramaCard extends StatelessWidget {
                   color: MoStyle.inkOf(context)),
             ),
           ),
+          const SizedBox(height: 2),
+          SizedBox(
+            height: 14,
+            child: Text(
+              meta,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                  fontSize: 10.5,
+                  color: metaParts.length >= 2 ? cs.outline : cs.outline.withValues(alpha: 0.75)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 播放量缩写：万/亿一位小数（整数不带小数点）
+String _formatCount(String raw) {
+  final n = int.tryParse(raw);
+  if (n == null) return raw;
+  String fmt(double v, String unit) {
+    final s = v.toStringAsFixed(1);
+    return s.endsWith('.0') ? s.substring(0, s.length - 2) + unit : s + unit;
+  }
+
+  if (n >= 100000000) return fmt(n / 100000000, '亿');
+  if (n >= 10000) return fmt(n / 10000, '万');
+  return raw;
+}
+
+/// 骨架屏：与海报网格同构的占位（呼吸式明暗脉冲），替代首屏转圈
+class _DramaSkeletonGrid extends StatefulWidget {
+  const _DramaSkeletonGrid({required this.cellW});
+
+  final double cellW;
+
+  @override
+  State<_DramaSkeletonGrid> createState() => _DramaSkeletonGridState();
+}
+
+class _DramaSkeletonGridState extends State<_DramaSkeletonGrid>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl = AnimationController(
+      vsync: this, duration: const Duration(milliseconds: 1100))
+    ..repeat(reverse: true);
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final fill = cs.onSurface.withValues(alpha: 0.06);
+    final coverH = widget.cellW / 0.72;
+    // 每行每列占位条宽度按位置错开，模拟真实标题长短不一
+    const titleWs = [0.92, 0.72, 0.84];
+    const metaWs = [0.55, 0.4, 0.62];
+
+    Widget bar(double w, {required double h, double r = 4}) => Container(
+          width: w,
+          height: h,
+          decoration: BoxDecoration(color: fill, borderRadius: BorderRadius.circular(r)),
+        );
+
+    Widget cell(int row, int col) => Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              height: coverH,
+              width: double.infinity,
+              decoration:
+                  BoxDecoration(color: fill, borderRadius: BorderRadius.circular(12)),
+            ),
+            const SizedBox(height: 6),
+            bar(widget.cellW * titleWs[(row + col) % 3], h: 12, r: 5),
+            const SizedBox(height: 4),
+            bar(widget.cellW * metaWs[(row + col) % 3], h: 9),
+          ],
+        );
+
+        return AnimatedBuilder(
+          animation: _ctrl,
+          builder: (context, _) {
+            final o = 0.45 + 0.35 * _ctrl.value; // 0.45 ↔ 0.8 呼吸
+            return Opacity(
+              opacity: o,
+              // 外层 12 + 单元内 6 = 18 页边距，与真实网格对齐；单元间 6+6=12 同 crossAxisSpacing
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
+            child: Column(
+              children: [
+                for (var r = 0; r < 3; r++)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 14),
+                    child: Row(
+                      children: [
+                        for (var c = 0; c < 3; c++)
+                          Expanded(
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 6),
+                              child: cell(r, c),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// 频道分段选择：全部 / 男频 / 女频（胶囊容器 + 选中浮起白底，iOS 分段控件墨笺化）
+class _GenderBar extends StatelessWidget {
+  const _GenderBar({required this.value, required this.onChanged});
+
+  final String value;
+  final ValueChanged<String> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final dark = cs.brightness == Brightness.dark;
+
+    Widget seg(String segValue, String label, IconData? icon) {
+      final selected = value == segValue;
+      return GestureDetector(
+        onTap: () => onChanged(segValue),
+        behavior: HitTestBehavior.opaque,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOutCubic,
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+          decoration: BoxDecoration(
+            color: selected
+                ? (dark ? MoStyle.darkPanel : MoStyle.panel)
+                : Colors.transparent,
+            borderRadius: BorderRadius.circular(999),
+            boxShadow: selected
+                ? [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: dark ? 0.35 : 0.10),
+                      blurRadius: 6,
+                      offset: const Offset(0, 1.5),
+                    ),
+                  ]
+                : const [],
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (icon != null) ...[
+                Icon(icon, size: 13, color: selected ? cs.primary : cs.onSurfaceVariant),
+                const SizedBox(width: 3.5),
+              ],
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 12.5,
+                  height: 1,
+                  fontWeight: selected ? FontWeight.w700 : FontWeight.w400,
+                  color: selected ? cs.primary : cs.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(3),
+      decoration: BoxDecoration(
+        color: cs.onSurface.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          seg('', '全部', null),
+          seg('1', '男频', Icons.male_rounded),
+          seg('0', '女频', Icons.female_rounded),
         ],
       ),
     );

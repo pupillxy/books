@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/url"
 	"strconv"
 	"strings"
@@ -39,14 +40,15 @@ type FilterItem struct {
 const panelTTL = 10 * time.Minute
 
 // Catalog 分类目录（App 接口直连；失败退回网页分类页）。
+// gender 为频道筛选："1"=男频 "0"=女频 ""=不限（实测三个 genre 都支持，上游按剧打标签）；
 // tag 为二级筛选，格式 "dim|id"（dim ∈ select_items 的键，如 category_dim_theme）；
 // 首屏（offset=0）顺带 need_selector_panel 拉取筛选面板，解析失败不影响列表。
-func (c *Client) Catalog(ctx context.Context, genre, tag string, offset int) (*CatalogPage, error) {
+func (c *Client) Catalog(ctx context.Context, genre, gender, tag string, offset int) (*CatalogPage, error) {
 	if offset == 0 {
 		if p := c.panel(genre); p != nil {
-			return c.catalog(ctx, genre, tag, offset, false, p)
+			return c.catalog(ctx, genre, gender, tag, offset, false, p)
 		}
-		page, err := c.catalog(ctx, genre, tag, offset, true, nil)
+		page, err := c.catalog(ctx, genre, gender, tag, offset, true, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -57,10 +59,10 @@ func (c *Client) Catalog(ctx context.Context, genre, tag string, offset int) (*C
 		}
 		return page, nil
 	}
-	return c.catalog(ctx, genre, tag, offset, false, c.panel(genre))
+	return c.catalog(ctx, genre, gender, tag, offset, false, c.panel(genre))
 }
 
-func (c *Client) catalog(ctx context.Context, genre, tag string, offset int, wantPanel bool, panel []FilterDim) (*CatalogPage, error) {
+func (c *Client) catalog(ctx context.Context, genre, gender, tag string, offset int, wantPanel bool, panel []FilterDim) (*CatalogPage, error) {
 	var scene, name string
 	valid := genre == ""
 	for _, g := range appGenres {
@@ -87,6 +89,9 @@ func (c *Client) catalog(ctx context.Context, genre, tag string, offset int, wan
 		selectItems["genre"] = []string{genre}
 		payload["req_scene"] = scene
 	}
+	if gender == "0" || gender == "1" { // 频道：0=女频 1=男频，其余值一律不传（不限）
+		selectItems["gender"] = []string{gender}
+	}
 	if dim, id, ok := strings.Cut(tag, "|"); ok && id != "" {
 		if _, exists := selectItems[dim]; exists {
 			selectItems[dim] = []string{id}
@@ -95,7 +100,7 @@ func (c *Client) catalog(ctx context.Context, genre, tag string, offset int, wan
 	if offset > 0 {
 		payload["client_req_type"] = 2
 		c.mu.Lock()
-		payload["session_id"] = c.sessions[genre]
+		payload["session_id"] = c.sessions[sessionKey(genre, gender, tag)]
 		c.mu.Unlock()
 	}
 
@@ -108,7 +113,7 @@ func (c *Client) catalog(ctx context.Context, genre, tag string, offset int, wan
 			}
 			c.mu.Lock()
 			if sid := mapString(nestedMap(result, "data"), "session_id"); sid != "" {
-				c.sessions[genre] = sid
+				c.sessions[sessionKey(genre, gender, tag)] = sid
 			}
 			c.mu.Unlock()
 			return page, nil
@@ -117,16 +122,24 @@ func (c *Client) catalog(ctx context.Context, genre, tag string, offset int, wan
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	// 网页兜底：真人剧走 real-drama，其余按 key 近似映射
+	// 网页兜底：真人剧走 real-drama，其余按 key 近似映射。
+	// 网页数据没有性别标签，gender 筛选会失效（打日志便于排查"频道串台"反馈）
 	page, webErr := c.webCategory(ctx, webGenreRoute(genre))
 	if webErr != nil {
 		return nil, fmt.Errorf("App 目录失败：%v；网页目录失败：%w", appErr, webErr)
 	}
+	log.Printf("[hongguo] 目录走网页兜底 genre=%s gender=%q tag=%q（gender 筛选不生效）: %v",
+		genre, gender, tag, appErr)
 	page.Filters = panel
 	return page, nil
 }
 
 // ─── 二级筛选面板 ─────────────────────────────────────────────────────
+
+// sessionKey 翻页 session 的缓存键：同分类下不同 gender/tag 组合各持一个会话
+func sessionKey(genre, gender, tag string) string {
+	return genre + "|" + gender + "|" + tag
+}
 
 func (c *Client) panel(genre string) []FilterDim {
 	c.mu.Lock()

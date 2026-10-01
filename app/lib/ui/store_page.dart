@@ -302,9 +302,7 @@ class _StorePageState extends ConsumerState<StorePage> {
                             height: 42,
                             padding: const EdgeInsets.symmetric(horizontal: 14),
                             decoration: BoxDecoration(
-                              color: cs.brightness == Brightness.dark
-                                  ? MoStyle.darkInputFill
-                                  : const Color(0xFFEEF2FB),
+                              color: MoStyle.inputFillOf(context),
                               borderRadius: BorderRadius.circular(13),
                             ),
                             child: Row(

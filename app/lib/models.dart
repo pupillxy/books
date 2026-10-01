@@ -333,6 +333,7 @@ class StoreBookDetail {
   final bool finished;
   final List<StoreChapter> chapters;
   final bool inLibrary;
+  final bool onShelf; // 是否已在当前用户书架（未入库时恒为 false）
   final int bookId;
   final String status;
   final String downloadStatus;
@@ -348,6 +349,7 @@ class StoreBookDetail {
     required this.finished,
     required this.chapters,
     required this.inLibrary,
+    required this.onShelf,
     required this.bookId,
     required this.status,
     required this.downloadStatus,
@@ -366,6 +368,7 @@ class StoreBookDetail {
             .map((e) => StoreChapter.fromJson(e as Map<String, dynamic>))
             .toList(),
         inLibrary: (j['in_library'] ?? false) as bool,
+        onShelf: (j['on_shelf'] ?? false) as bool,
         bookId: (j['book_id'] as num?)?.toInt() ?? 0,
         status: (j['status'] ?? '') as String,
         downloadStatus: (j['download_status'] ?? '') as String,

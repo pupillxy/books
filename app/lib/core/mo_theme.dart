@@ -32,6 +32,14 @@ class MoStyle {
   /// 主色淡底（跟随深浅色）
   static Color softOf(BuildContext context) =>
       Theme.of(context).colorScheme.brightness == Brightness.dark ? darkPrimarySoft : primarySoft;
+
+  /// 输入框/分段控件容器底色（跟随深浅色）。
+  /// 浅色用墨色 5%：暖纸底上呈暖灰，与筛选胶囊、频道栏同语言；
+  /// 原冷蓝 #EEF2FB 与暖纸色主题冲突，已废弃。
+  static Color inputFillOf(BuildContext context) =>
+      Theme.of(context).colorScheme.brightness == Brightness.dark
+          ? darkInputFill
+          : Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.05);
   static const rule = Color(0xFFEADCCA);
   static const success = Color(0xFF1F9D6D);
   static const danger = Color(0xFFD84A44);

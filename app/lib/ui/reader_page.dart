@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/api.dart';
 import '../core/mo_theme.dart';
+import '../core/reader_source.dart';
 import '../core/session.dart';
 import '../models.dart';
 import 'widgets.dart';
@@ -137,10 +138,18 @@ const kReaderThemes = [
 // ============================================================
 
 class ReaderPage extends ConsumerStatefulWidget {
-  const ReaderPage({super.key, required this.book, required this.initialChapter});
+  const ReaderPage({
+    super.key,
+    required this.book,
+    required this.initialChapter,
+    this.source,
+  });
 
   final Book book;
   final int initialChapter;
+
+  /// 阅读数据源：null = 服务端在线书（走 API）；本机书传 LocalReaderSource
+  final ReaderSource? source;
 
   @override
   ConsumerState<ReaderPage> createState() => _ReaderPageState();
@@ -196,9 +205,9 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
   DateTime _lastPosSave = DateTime.fromMillisecondsSinceEpoch(0); // 位置落盘节流
   Brightness _appBrightness = Brightness.light; // App 当前主题亮度（退出时恢复状态栏用）
 
-  ApiClient get _api => ref.read(sessionProvider).api!;
+  late final ReaderSource _source; // initState 里初始化（在线书默认 API 源）
 
-  int get _total => math.max(widget.book.totalChapters, 0);
+  int get _total => _source.totalChapters;
 
   @override
   void didChangeDependencies() {
@@ -209,6 +218,8 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
   @override
   void initState() {
     super.initState();
+    _source = widget.source ??
+        ApiReaderSource(ref.read(sessionProvider).api!, widget.book);
     _pageController = PageController();
     _scrollCtl.addListener(_onScroll);
     _chapterIdx = widget.initialChapter;
@@ -226,12 +237,12 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
       _scrollMode = prefs.getBool('rd.scroll') ?? true;
     });
     _applySystemUi();
-    final savedCh = prefs.getInt('rd.ch.${widget.book.id}');
+    final savedCh = prefs.getInt('rd.ch.${_source.persistKey}');
     final sameCh = savedCh == _chapterIdx;
     final restorePage =
-        sameCh ? (prefs.getInt('rd.pg.${widget.book.id}') ?? 0) : 0;
+        sameCh ? (prefs.getInt('rd.pg.${_source.persistKey}') ?? 0) : 0;
     final restoreScroll =
-        sameCh ? prefs.getDouble('rd.so.${widget.book.id}') : null;
+        sameCh ? prefs.getDouble('rd.so.${_source.persistKey}') : null;
     await _loadChapter(_chapterIdx,
         page: restorePage, scrollOffset: restoreScroll);
   }
@@ -293,11 +304,11 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
     final start = _blockStarts[_chapterIdx] ?? 0;
     final within = _scrollCtl.offset - start;
     SharedPreferences.getInstance().then((p) {
-      p.setInt('rd.ch.${widget.book.id}', _chapterIdx);
+      p.setInt('rd.ch.${_source.persistKey}', _chapterIdx);
       if (within > 0) {
-        p.setDouble('rd.so.${widget.book.id}', within);
+        p.setDouble('rd.so.${_source.persistKey}', within);
       } else {
-        p.remove('rd.so.${widget.book.id}');
+        p.remove('rd.so.${_source.persistKey}');
       }
     });
   }
@@ -338,7 +349,7 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
         _chapterTitle = _chapterCache[cur]?.title ?? _chapterTitle;
         _lastScrollPct = -1;
       });
-      unawaited(_api.saveProgress(widget.book.id, cur));
+      _source.saveProgress(cur);
       _lastPosSave = DateTime.now();
       _persistScrollPos(); // 跨章立即落盘，避免杀进程丢章号
     }
@@ -356,7 +367,7 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
   Future<Chapter> _fetchChapter(int idx) async {
     final cached = _chapterCache[idx];
     if (cached != null) return cached;
-    final ch = await _api.chapter(widget.book.id, idx);
+    final ch = await _source.loadChapter(idx);
     _chapterCache[idx] = ch;
     return ch;
   }
@@ -400,7 +411,7 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
         _mountNeighbor(1);
         _mountNeighbor(-1);
       }
-      unawaited(_api.saveProgress(widget.book.id, idx));
+      _source.saveProgress(idx);
       _prefetch(idx + 1);
     } on ApiException catch (e) {
       if (!mounted) return;
@@ -423,9 +434,7 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
 
   Future<List<ChapterMeta>> _ensureToc() async {
     if (_toc != null) return _toc!;
-    final d = await _api.bookDetail(widget.book.id);
-    _toc = d.chapters;
-    return _toc!;
+    return _toc = await _source.loadToc();
   }
 
   void _openToc() async {
@@ -872,8 +881,8 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
       onPageChanged: (i) {
         setState(() {});
         SharedPreferences.getInstance().then((p) {
-          p.setInt('rd.ch.${widget.book.id}', _chapterIdx);
-          p.setInt('rd.pg.${widget.book.id}', i);
+          p.setInt('rd.ch.${_source.persistKey}', _chapterIdx);
+          p.setInt('rd.pg.${_source.persistKey}', i);
         });
       },
       itemBuilder: (context, i) => Padding(
@@ -1139,7 +1148,7 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
               children: [
                 Container(
                   decoration: BoxDecoration(
-                    color: dark ? MoStyle.darkInputFill : const Color(0xFFEEF2FB),
+                    color: MoStyle.inputFillOf(context),
                     borderRadius: BorderRadius.circular(12),
                   ),
                   padding: const EdgeInsets.all(3),
@@ -1309,7 +1318,7 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
                   const SizedBox(height: 10),
                   Container(
                     decoration: BoxDecoration(
-                      color: dark ? MoStyle.darkInputFill : const Color(0xFFEEF2FB),
+                      color: MoStyle.inputFillOf(context),
                       borderRadius: BorderRadius.circular(12),
                     ),
                     padding: const EdgeInsets.all(3),
@@ -1420,8 +1429,8 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
       final idx =
           (_pageController.page?.round() ?? 0).clamp(0, _paged!.pages.length - 1);
       SharedPreferences.getInstance().then((p) {
-        p.setInt('rd.ch.${widget.book.id}', _chapterIdx);
-        p.setInt('rd.pg.${widget.book.id}', idx);
+        p.setInt('rd.ch.${_source.persistKey}', _chapterIdx);
+        p.setInt('rd.pg.${_source.persistKey}', idx);
       });
     }
   }

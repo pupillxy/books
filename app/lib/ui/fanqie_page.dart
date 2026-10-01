@@ -2,9 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/api.dart';
+import '../core/mo_theme.dart';
 import '../core/session.dart';
 import '../models.dart';
-import '../core/mo_theme.dart';
 import 'store_book_detail_page.dart';
 import 'store_library_page.dart';
 import 'store_rank_page.dart';
@@ -76,8 +76,8 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
     _loadingKeys.add(key);
     setState(() => _booksError = null);
     try {
-      final books = await _api.storeFeaturedBooks(_boardKey,
-          gender: _gender, limit: 20);
+      final books =
+          await _api.storeFeaturedBooks(_boardKey, gender: _gender, limit: 20);
       if (!mounted) return;
       setState(() {
         _booksCache[key] = books;
@@ -94,7 +94,8 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
 
   Future<void> _refresh() async {
     _booksCache.clear();
-    await Future.wait([_loadBoards(), _loadBooks()]);
+    await _loadBoards();
+    await _loadBooks();
   }
 
   void _openDetail(LibraryBook b) {
@@ -110,7 +111,7 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
         child: CustomScrollView(
           physics: const AlwaysScrollableScrollPhysics(),
           slivers: [
-            _buildHeader(context),
+            SliverToBoxAdapter(child: _buildHeader(context)),
             SliverToBoxAdapter(child: _buildSearchBar(context)),
             SliverToBoxAdapter(child: _buildBody(context)),
             SliverToBoxAdapter(child: _buildEntries(context)),
@@ -124,70 +125,68 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
   // ── 头部：渐变 + 标题 + 性别切换 ─────────────────────────────────
   Widget _buildHeader(BuildContext context) {
     final dark = Theme.of(context).brightness == Brightness.dark;
-    return SliverToBoxAdapter(
-      child: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: dark
-                ? [MoStyle.darkPrimaryStrong, MoStyle.darkPrimary]
-                : [MoStyle.primaryStrong, MoStyle.primary],
-          ),
-          borderRadius: const BorderRadius.only(
-            bottomLeft: Radius.circular(22),
-            bottomRight: Radius.circular(22),
-          ),
+    return Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: dark
+              ? [MoStyle.darkPrimaryStrong, MoStyle.darkPrimary]
+              : [MoStyle.primaryStrong, MoStyle.primary],
         ),
-        padding: const EdgeInsets.fromLTRB(18, 14, 18, 18),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Text('番茄书城',
-                    style: TextStyle(
-                      fontFamily: MoStyle.titleFont,
-                      fontSize: 24,
-                      fontWeight: FontWeight.w800,
-                      color: Colors.white,
-                      letterSpacing: 1,
-                    )),
-                const Spacer(),
-                _GenderPill(
-                  value: _gender,
-                  onChanged: (v) {
-                    setState(() => _gender = v);
-                    _loadBooks();
-                  },
-                ),
-              ],
-            ),
-            const SizedBox(height: 4),
-            Text('榜单同源 · 正文按需在线读',
-                style: TextStyle(
-                    color: Colors.white.withValues(alpha: .85), fontSize: 12)),
-          ],
+        borderRadius: const BorderRadius.only(
+          bottomLeft: Radius.circular(22),
+          bottomRight: Radius.circular(22),
         ),
+      ),
+      padding: const EdgeInsets.fromLTRB(18, 14, 18, 18),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Text('番茄书城',
+                  style: TextStyle(
+                    fontFamily: MoStyle.titleFont,
+                    fontSize: 24,
+                    fontWeight: FontWeight.w800,
+                    color: Colors.white,
+                    letterSpacing: 1,
+                  )),
+              const Spacer(),
+              _GenderPill(
+                value: _gender,
+                onChanged: (v) {
+                  setState(() => _gender = v);
+                  _loadBooks();
+                },
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text('榜单同源 · 正文按需在线读',
+              style: TextStyle(
+                  color: Colors.white.withValues(alpha: .85), fontSize: 12)),
+        ],
       ),
     );
   }
 
   Widget _buildSearchBar(BuildContext context) {
-    return SliverToBoxAdapter(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(30),
-          onTap: () => Navigator.of(context)
-              .push(MaterialPageRoute(builder: (_) => const StoreSearchPage())),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.surfaceContainerHighest,
-              borderRadius: BorderRadius.circular(30),
-            ),
-            child: Row(children: [
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(30),
+        onTap: () => Navigator.of(context)
+            .push(MaterialPageRoute(builder: (_) => const StoreSearchPage())),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(30),
+          ),
+          child: Row(
+            children: [
               Icon(Icons.search_rounded,
                   size: 20, color: Theme.of(context).colorScheme.outline),
               const SizedBox(width: 8),
@@ -195,7 +194,7 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
                   style: TextStyle(
                       color: Theme.of(context).colorScheme.outline,
                       fontSize: 14)),
-            ]),
+            ],
           ),
         ),
       ),
@@ -224,7 +223,9 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
   Widget _buildTop3(BuildContext context) {
     final books = _booksCache[_cacheKey] ?? const <LibraryBook>[];
     if (books.isEmpty) {
-      return const SizedBox(height: 150, child: Center(child: CircularProgressIndicator(strokeWidth: 2)));
+      return const SizedBox(
+          height: 150,
+          child: Center(child: CircularProgressIndicator(strokeWidth: 2)));
     }
     final top = books.take(3).toList();
     final boardName = _boards[_boardIdx.clamp(0, _boards.length - 1)].name;
@@ -234,7 +235,7 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
         itemCount: top.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 12),
+        separatorBuilder: (context, index) => const SizedBox(width: 12),
         itemBuilder: (context, i) {
           final b = top[i];
           return InkWell(
@@ -246,57 +247,61 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
               decoration: BoxDecoration(
                 color: MoStyle.softOf(context),
                 borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: MoStyle.strongOf(context).withValues(alpha: .18)),
+                border: Border.all(
+                    color: MoStyle.strongOf(context).withValues(alpha: .18)),
               ),
-              child: Row(children: [
-                SizedBox(
-                  width: 84,
-                  child: Stack(children: [
-                    AspectRatio(
-                        aspectRatio: 3 / 4,
-                        child: BookCover(url: b.coverUrl, title: b.title, cacheWidth: 300)),
-                    Positioned(
-                      left: 0,
-                      top: 0,
-                      child: _rankBadge(i + 1),
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 84,
+                    child: Stack(
+                      children: [
+                        AspectRatio(
+                            aspectRatio: 3 / 4,
+                            child: BookCover(
+                                url: b.coverUrl,
+                                title: b.title,
+                                cacheWidth: 300)),
+                        Positioned(left: 0, top: 0, child: _rankBadge(i + 1)),
+                      ],
                     ),
-                  ]),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(boardName,
-                          style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w700,
-                              color: MoStyle.strongOf(context))),
-                      const SizedBox(height: 4),
-                      Text(b.title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                              fontFamily: MoStyle.titleFont,
-                              fontSize: 16,
-                              fontWeight: FontWeight.w700)),
-                      const SizedBox(height: 4),
-                      Text(b.author,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                              fontSize: 12,
-                              color: Theme.of(context).colorScheme.outline)),
-                      const Spacer(),
-                      if (b.readCount.isNotEmpty)
-                        Text(b.readCount,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(boardName,
                             style: TextStyle(
                                 fontSize: 11,
+                                fontWeight: FontWeight.w700,
                                 color: MoStyle.strongOf(context))),
-                    ],
+                        const SizedBox(height: 4),
+                        Text(b.title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                fontFamily: MoStyle.titleFont,
+                                fontSize: 16,
+                                fontWeight: FontWeight.w700)),
+                        const SizedBox(height: 4),
+                        Text(b.author,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                                fontSize: 12,
+                                color: Theme.of(context).colorScheme.outline)),
+                        const Spacer(),
+                        if (b.readCount.isNotEmpty)
+                          Text(b.readCount,
+                              style: TextStyle(
+                                  fontSize: 11,
+                                  color: MoStyle.strongOf(context))),
+                      ],
+                    ),
                   ),
-                ),
-              ]),
+                ],
+              ),
             ),
           );
         },
@@ -314,40 +319,40 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
       ),
       child: Text('TOP$n',
           style: const TextStyle(
-              color: Colors.white, fontSize: 10, fontWeight: FontWeight.w800)),
+              color: Colors.white,
+              fontSize: 10,
+              fontWeight: FontWeight.w800)),
     );
   }
 
   Widget _buildBoardChips(BuildContext context) {
-    return SliverToBoxAdapter(
-      child: SizedBox(
-        height: 44,
-        child: ListView.separated(
-          scrollDirection: Axis.horizontal,
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          itemCount: _boards.length,
-          separatorBuilder: (_, __) => const SizedBox(width: 8),
-          itemBuilder: (context, i) {
-            final selected = i == _boardIdx;
-            return ChoiceChip(
-              label: Text(_boards[i].name),
-              selected: selected,
-              onSelected: (_) {
-                setState(() => _boardIdx = i);
-                _loadBooks();
-              },
-              selectedColor: MoStyle.strongOf(context),
-              labelStyle: TextStyle(
-                  fontSize: 13,
-                  fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-                  color: selected
-                      ? Colors.white
-                      : Theme.of(context).colorScheme.onSurface),
-              showCheckmark: false,
-              visualDensity: VisualDensity.compact,
-            );
-          },
-        ),
+    return SizedBox(
+      height: 44,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        itemCount: _boards.length,
+        separatorBuilder: (context, index) => const SizedBox(width: 8),
+        itemBuilder: (context, i) {
+          final selected = i == _boardIdx;
+          return ChoiceChip(
+            label: Text(_boards[i].name),
+            selected: selected,
+            onSelected: (_) {
+              setState(() => _boardIdx = i);
+              _loadBooks();
+            },
+            selectedColor: MoStyle.strongOf(context),
+            labelStyle: TextStyle(
+                fontSize: 13,
+                fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                color: selected
+                    ? Colors.white
+                    : Theme.of(context).colorScheme.onSurface),
+            showCheckmark: false,
+            visualDensity: VisualDensity.compact,
+          );
+        },
       ),
     );
   }
@@ -363,17 +368,19 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
     }
     final rest = all.length > 3 ? all.sublist(3) : const <LibraryBook>[];
     if (rest.isEmpty) {
-      return const EmptyView(icon: Icons.menu_book_rounded, title: '这一榜就这几本了');
+      return const EmptyView(
+          icon: Icons.menu_book_rounded, title: '这一榜就这几本了');
     }
-    return SliverToBoxAdapter(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
-        child: Column(
-          children: [
-            for (var i = 0; i < rest.length; i++)
-              _RankTile(book: rest[i], rank: i + 4, onTap: () => _openDetail(rest[i])),
-          ],
-        ),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+      child: Column(
+        children: [
+          for (var i = 0; i < rest.length; i++)
+            _RankTile(
+                book: rest[i],
+                rank: i + 4,
+                onTap: () => _openDetail(rest[i])),
+        ],
       ),
     );
   }
@@ -418,32 +425,30 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
 
   // ── 更多入口 ────────────────────────────────────────────────────
   Widget _buildEntries(BuildContext context) {
-    return SliverToBoxAdapter(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 20, 16, 0),
-        child: Row(
-          children: [
-            Expanded(
-              child: _EntryCard(
-                icon: Icons.leaderboard_rounded,
-                title: '全部榜单',
-                subtitle: '分类排行 · 完整排名',
-                onTap: () => Navigator.of(context)
-                    .push(MaterialPageRoute(builder: (_) => const StoreRankPage())),
-              ),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 20, 16, 0),
+      child: Row(
+        children: [
+          Expanded(
+            child: _EntryCard(
+              icon: Icons.leaderboard_rounded,
+              title: '全部榜单',
+              subtitle: '分类排行 · 完整排名',
+              onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const StoreRankPage())),
             ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: _EntryCard(
-                icon: Icons.category_rounded,
-                title: '分类书库',
-                subtitle: '题材筛选 · 精准找书',
-                onTap: () => Navigator.of(context)
-                    .push(MaterialPageRoute(builder: (_) => const StoreLibraryPage())),
-              ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: _EntryCard(
+              icon: Icons.category_rounded,
+              title: '分类书库',
+              subtitle: '题材筛选 · 精准找书',
+              onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const StoreLibraryPage())),
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
@@ -467,74 +472,85 @@ class _RankTile extends StatelessWidget {
       onTap: onTap,
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 8),
-        child: Row(children: [
-          SizedBox(
-            width: 30,
-            child: Text('$rank',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontFamily: MoStyle.titleFont,
-                  fontSize: 18,
-                  fontWeight: FontWeight.w800,
-                  fontStyle: FontStyle.italic,
-                  color: rankColor,
-                )),
-          ),
-          SizedBox(
-            width: 52,
-            child: AspectRatio(
-                aspectRatio: 3 / 4,
-                child: BookCover(url: book.coverUrl, title: book.title, cacheWidth: 200)),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(book.title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        fontFamily: MoStyle.titleFont,
-                        fontSize: 15,
-                        fontWeight: FontWeight.w600)),
-                const SizedBox(height: 3),
-                Row(children: [
-                  Flexible(
-                    child: Text(book.author,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                            fontSize: 12,
-                            color: Theme.of(context).colorScheme.outline)),
-                  ),
-                  if (book.readCount.isNotEmpty) ...[
-                    Text(' · ',
-                        style: TextStyle(
-                            fontSize: 12,
-                            color: Theme.of(context).colorScheme.outline)),
-                    Text(book.readCount,
-                        style: TextStyle(
-                            fontSize: 12,
-                            color: MoStyle.strongOf(context))),
-                  ],
-                ]),
-              ],
-            ),
-          ),
-          if (book.finished)
-            Container(
-              margin: const EdgeInsets.only(left: 8),
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(5),
-              ),
-              child: Text('完结',
+        child: Row(
+          children: [
+            SizedBox(
+              width: 30,
+              child: Text('$rank',
+                  textAlign: TextAlign.center,
                   style: TextStyle(
-                      fontSize: 10, color: Theme.of(context).colorScheme.outline)),
+                    fontFamily: MoStyle.titleFont,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800,
+                    fontStyle: FontStyle.italic,
+                    color: rankColor,
+                  )),
             ),
-        ]),
+            SizedBox(
+              width: 52,
+              child: AspectRatio(
+                  aspectRatio: 3 / 4,
+                  child: BookCover(
+                      url: book.coverUrl,
+                      title: book.title,
+                      cacheWidth: 200)),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(book.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontFamily: MoStyle.titleFont,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 3),
+                  Row(
+                    children: [
+                      Flexible(
+                        child: Text(book.author,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                                fontSize: 12,
+                                color:
+                                    Theme.of(context).colorScheme.outline)),
+                      ),
+                      if (book.readCount.isNotEmpty) ...[
+                        Text(' · ',
+                            style: TextStyle(
+                                fontSize: 12,
+                                color:
+                                    Theme.of(context).colorScheme.outline)),
+                        Text(book.readCount,
+                            style: TextStyle(
+                                fontSize: 12,
+                                color: MoStyle.strongOf(context))),
+                      ],
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            if (book.finished)
+              Container(
+                margin: const EdgeInsets.only(left: 8),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(5),
+                ),
+                child: Text('完结',
+                    style: TextStyle(
+                        fontSize: 10,
+                        color: Theme.of(context).colorScheme.outline)),
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -608,29 +624,31 @@ class _EntryCard extends StatelessWidget {
           color: MoStyle.softOf(context),
           borderRadius: BorderRadius.circular(14),
         ),
-        child: Row(children: [
-          Icon(icon, color: MoStyle.strongOf(context), size: 26),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(title,
-                    style: const TextStyle(
-                        fontFamily: MoStyle.titleFont,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w700)),
-                const SizedBox(height: 2),
-                Text(subtitle,
-                    style: TextStyle(
-                        fontSize: 11,
-                        color: Theme.of(context).colorScheme.outline)),
-              ],
+        child: Row(
+          children: [
+            Icon(icon, color: MoStyle.strongOf(context), size: 26),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title,
+                      style: const TextStyle(
+                          fontFamily: MoStyle.titleFont,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700)),
+                  const SizedBox(height: 2),
+                  Text(subtitle,
+                      style: TextStyle(
+                          fontSize: 11,
+                          color: Theme.of(context).colorScheme.outline)),
+                ],
+              ),
             ),
-          ),
-          Icon(Icons.chevron_right_rounded,
-              size: 18, color: Theme.of(context).colorScheme.outline),
-        ]),
+            Icon(Icons.chevron_right_rounded,
+                size: 18, color: Theme.of(context).colorScheme.outline),
+          ],
+        ),
       ),
     );
   }

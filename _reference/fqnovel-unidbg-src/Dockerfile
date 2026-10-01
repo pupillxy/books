@@ -3,7 +3,7 @@
 # 运行: 见 docs/NAS部署脚本.md 的 fq-unidbg 服务段
 
 # ── 构建阶段（Maven + 阿里云镜像源）────────────────────────────────
-FROM maven:3.9-eclipse-temurin-17 AS build
+FROM docker.m.daocloud.io/library/maven:3.9-eclipse-temurin-17 AS build
 WORKDIR /src
 COPY pom.xml ./
 # 先拷 pom 单独下载依赖，利用层缓存
@@ -13,7 +13,7 @@ COPY application.yml ./
 RUN mvn -q -B -DskipTests package
 
 # ── 运行阶段 ───────────────────────────────────────────────────────
-FROM eclipse-temurin:17-jre
+FROM docker.m.daocloud.io/library/eclipse-temurin:17-jre
 WORKDIR /app
 COPY --from=build /src/target/unidbg-boot-server-0.0.1-SNAPSHOT.jar app.jar
 EXPOSE 9999

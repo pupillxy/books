@@ -406,9 +406,10 @@ func (h *StoreHandler) AddBook(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ok": true, "book_id": bookID, "status": "online", "download_status": downloadStatus})
 }
 
-// AutoDownload 详情页进入即调用（幂等）：未入库 → 入库 + 触发整本下载；
-// 已入库但仅有在线免费章 → 补触发下载；已下载全文/下载中 → 直接返回当前状态。
-// query shelf=0 时仅入库+下载、不加入书架（书架由用户手动「加入书架」控制）。
+// AutoDownload 详情页进入即调用（幂等）：入库 + 目录预拉 + 可选加书架。
+// 在线阅读时代：正文按需回源（读到哪章拉哪章并缓存），不再自动整本下载；
+// 需要离线缓存时走显式下载（POST /store/books/:fanqieID/download 或 ?download=1）。
+// download_status 恒返 "disabled" 让 App 详情页停止下载轮询（在线可读）。
 func (h *StoreHandler) AutoDownload(c *gin.Context) {
 	fid := c.Param("fanqieID")
 	if !fanqie.ValidateBookID(fid) {
@@ -416,16 +417,18 @@ func (h *StoreHandler) AutoDownload(c *gin.Context) {
 		return
 	}
 	addShelf := c.DefaultQuery("shelf", "1") != "0"
+	download := c.DefaultQuery("download", "0") == "1"
 	userID := middleware.UserID(c)
 	if bk, err := h.DB.GetBookByFanqieID(fid); err == nil {
 		if addShelf {
 			_ = h.DB.AddShelf(userID, bk.ID)
 		}
-		var ds string
-		if bk.Status != "ready" && bk.Status != "downloading" {
+		ds := "disabled"
+		if download && bk.Status != "ready" && bk.Status != "downloading" {
 			ds = h.triggerDownload(fid, bk.Title, bk.ID)
 		}
-		if task, err := h.DB.GetDownloadTask(fid); err == nil {
+		if task, err := h.DB.GetDownloadTask(fid); err == nil &&
+			(task.Status == "pending" || task.Status == "running") {
 			ds = task.Status
 		}
 		c.JSON(http.StatusOK, gin.H{"ok": true, "book_id": bk.ID, "status": bk.Status, "download_status": ds, "already": true})
@@ -436,10 +439,13 @@ func (h *StoreHandler) AutoDownload(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "自动入库失败: " + err.Error()})
 		return
 	}
-	ds := h.triggerDownload(fid, title, bookID)
-	status := "downloading"
-	if ds == "disabled" || ds == "failed" {
-		status = "online"
+	status := "online"
+	ds := "disabled"
+	if download {
+		ds = h.triggerDownload(fid, title, bookID)
+		if ds == "pending" || ds == "running" {
+			status = "downloading"
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true, "book_id": bookID, "status": status, "download_status": ds})
 }

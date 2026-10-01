@@ -5,7 +5,7 @@ import '../core/mo_theme.dart';
 import 'bookshelf_page.dart';
 import 'drama_page.dart';
 import 'settings_page.dart';
-import 'store_page.dart';
+import 'fanqie_page.dart';
 
 /// 主框架：4 Tab（书架 / 书城 / 短剧 / 我的）
 class HomePage extends ConsumerStatefulWidget {
@@ -18,7 +18,7 @@ class HomePage extends ConsumerStatefulWidget {
 class _HomePageState extends ConsumerState<HomePage> {
   int _index = 0;
 
-  static const _pages = [BookshelfPage(), StorePage(), DramaPage(), SettingsPage()];
+  static const _pages = [BookshelfPage(), FanqiePage(), DramaPage(), SettingsPage()];
 
   static const _icons = [
     Icons.auto_stories_outlined,

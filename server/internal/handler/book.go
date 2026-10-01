@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -12,12 +13,14 @@ import (
 	"xiaoshuo/internal/fanqie"
 	"xiaoshuo/internal/middleware"
 	"xiaoshuo/internal/scanner"
+	"xiaoshuo/internal/unidbg"
 )
 
 type BookHandler struct {
 	DB      *database.DBStore
 	Scanner *scanner.Scanner
 	FQ      *fanqie.Client
+	UNI     *unidbg.Client
 }
 
 func (h *BookHandler) List(c *gin.Context) {
@@ -97,30 +100,64 @@ func (h *BookHandler) Chapter(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "章节内容为空"})
 		return
 	}
-	cc, err := h.FQ.GetChapterContent(srcID)
-	if errors.Is(err, fanqie.ErrChapterLocked) {
-		c.JSON(http.StatusPaymentRequired, gin.H{
-			"error": "该章节为付费内容，等待整本下载完成后即可阅读",
-			"title": "",
-		})
-		return
-	}
-	if err != nil {
-		log.Printf("[store] 在线拉取正文失败 book=%d idx=%d src=%s: %v", id, idx, srcID, err)
+
+	content, ctitle, ferr := h.fetchOnlineContent(book.FanqieID, srcID, ch.Title)
+	if len([]rune(content)) < 50 {
+		// 两个源都拿不到正文：付费章（网页端锁定）或上游限流
+		if errors.Is(ferr, fanqie.ErrChapterLocked) {
+			c.JSON(http.StatusPaymentRequired, gin.H{"error": "该章节为付费内容，需要离线缓存后阅读", "title": ctitle})
+			return
+		}
+		log.Printf("[store] 在线拉取正文失败 book=%d idx=%d src=%s: %v", id, idx, srcID, ferr)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "在线获取正文失败，请稍后重试"})
 		return
 	}
-	if len([]rune(cc.Content)) < 50 {
-		// 付费章节网页端拿不到正文
-		c.JSON(http.StatusPaymentRequired, gin.H{
-			"error": "该章节为付费内容，等待整本下载完成后即可阅读",
-			"title": cc.Title,
-		})
+	_ = h.DB.FillChapterContent(id, idx, content)
+	ch.Content = content
+
+	// 预取下一章：阅读翻页无感（幂等，已有内容自动跳过）
+	go h.backfillChapter(id, book.FanqieID, idx+1)
+
+	c.JSON(http.StatusOK, ch)
+}
+
+// fetchOnlineContent 在线正文：网页端优先，被风控/锁定时退 unidbg（App 协议同源数据）。
+// 返回值 ferr 为网页端错误（ErrChapterLocked 判定用）。
+func (h *BookHandler) fetchOnlineContent(fid, srcID, title string) (content, ctitle string, ferr error) {
+	cc, err := h.FQ.GetChapterContent(srcID)
+	ferr = err
+	if err == nil && len([]rune(cc.Content)) >= 50 {
+		return cc.Content, cc.Title, nil
+	}
+	if h.UNI != nil && h.UNI.Enabled() {
+		txt, uerr := h.UNI.ChapterContent(fid, srcID)
+		if uerr == nil {
+			txt = strings.TrimPrefix(txt, title+"\n") // unidbg txtContent 首行是章节名
+			if len([]rune(txt)) >= 50 {
+				return txt, title, nil
+			}
+		}
+	}
+	return "", "", ferr
+}
+
+// backfillChapter 单章按需回填（幂等）：已有正文直接跳过
+func (h *BookHandler) backfillChapter(bookID int64, fid string, idx int) {
+	if fid == "" {
 		return
 	}
-	_ = h.DB.FillChapterContent(id, idx, cc.Content)
-	ch.Content = cc.Content
-	c.JSON(http.StatusOK, ch)
+	ch, err := h.DB.GetChapter(bookID, idx)
+	if err != nil || ch.Content != "" {
+		return
+	}
+	srcID, err := h.DB.GetChapterSrcID(bookID, idx)
+	if err != nil || srcID == "" {
+		return
+	}
+	content, _, _ := h.fetchOnlineContent(fid, srcID, ch.Title)
+	if len([]rune(content)) >= 50 {
+		_ = h.DB.FillChapterContent(bookID, idx, content)
+	}
 }
 
 func (h *BookHandler) TriggerScan(c *gin.Context) {

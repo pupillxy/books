@@ -64,6 +64,10 @@
 - 设备被标记（报「响应格式异常/空响应，请手动更新设备信息」）：
   `POST /api/device/register`（body 可空 JSON，自动换设备）→ **必须重启容器才生效**
   （autoUpdateConfig 实测不落盘 application.yml！手动改 yml 也可以）。
+- **正文接口只信任有资历的设备**：新注册设备 feed/目录正常但正文空响应。
+  当前配置用的是仓库自带的老华为设备（正文可用，勿随意轮换）；
+  自动轮换默认关闭，`XS_UNIDBG_ROTATE=1` 才启用（轮换后正文会失效，慎开）。
+  正文两源失败时 book.Chapter 会自动触发整本获取（TND 兜底）。
 - **IP 级限流**：换设备也没用、连搜索都 code=-1 = IP 被限。冷却几十分钟自愈，不要慌。
 - 限速纪律：批量正文 3s/批（每批 20 章）；测试时克制，PC 与 NAS 共用同一公网 IP。
 - 设备信息在 `application.yml` 的 `fq.device`（当前 Xiaomi 23127PN0CC / 68132 海外版）。

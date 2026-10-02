@@ -404,6 +404,10 @@ func (c *Client) HomeFeed() ([]FeedSection, error) {
 	if env.Code != 0 {
 		// 设备风控（ILLEGAL_ACCESS）→ 自动轮换设备后重试一次
 		if isRiskControl(env.Code, env.Message) {
+			if os.Getenv("XS_UNIDBG_ROTATE") != "1" {
+				return nil, fmt.Errorf("feed 上游 code=%d %s（设备风控，冷却后自愈；XS_UNIDBG_ROTATE=1 可开启自动轮换）",
+					env.Code, env.Message)
+			}
 			rerr := c.recoverDevice()
 			if rerr == nil {
 				return c.HomeFeed()

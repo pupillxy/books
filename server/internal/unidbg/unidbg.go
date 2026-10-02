@@ -385,14 +385,15 @@ func (c *Client) HomeFeed() ([]FeedSection, error) {
 		return nil, err
 	}
 	var env struct {
-		Code int             `json:"code"`
-		Data json.RawMessage `json:"data"`
+		Code    int             `json:"code"`
+		Message string          `json:"message"`
+		Data    json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal(body, &env); err != nil {
 		return nil, fmt.Errorf("feed 响应解析: %w", err)
 	}
 	if env.Code != 0 {
-		return nil, fmt.Errorf("feed 上游 code=%d", env.Code)
+		return nil, fmt.Errorf("feed 上游 code=%d %s", env.Code, env.Message)
 	}
 	var data struct {
 		TabItem []struct {

@@ -5,13 +5,18 @@ package unidbg
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"xiaoshuo/internal/database"
@@ -353,18 +358,18 @@ const bookmallBusinessQuery = `unlimited_short_series_change_type=0&last_search_
 
 // FeedBook App 推荐流中的一本书
 type FeedBook struct {
-	BookID     string `json:"book_id"`
-	BookName   string `json:"book_name"`
-	Author     string `json:"author"`
-	Abstract   string `json:"abstract"`
-	Category   string `json:"category"`
-	ThumbURL   string `json:"thumb_url"`
-	ReadCount  string `json:"read_count"`  // read_cnt_text，形如 "3292人在读"
-	RankScore  string `json:"rank_score"`  // 形如 "9243万热度"
-	Score      string `json:"score"`
-	Tags       string `json:"tags"`
-	SerialNum  string `json:"serial_count"`
-	Finished   bool   `json:"finished"`
+	BookID    string `json:"book_id"`
+	BookName  string `json:"book_name"`
+	Author    string `json:"author"`
+	Abstract  string `json:"abstract"`
+	Category  string `json:"category"`
+	ThumbURL  string `json:"thumb_url"`
+	ReadCount string `json:"read_count"` // read_cnt_text，形如 "3292人在读"
+	RankScore string `json:"rank_score"` // 形如 "9243万热度"
+	Score     string `json:"score"`
+	Tags      string `json:"tags"`
+	SerialNum string `json:"serial_count"`
+	Finished  bool   `json:"finished"`
 }
 
 // FeedSection App 书城 feed 的一个模块（「排行榜」「猜你喜欢」等）
@@ -377,9 +382,10 @@ type FeedSection struct {
 // HomeFeed 拉取 App 书城首页 feed（推荐 tab：排行榜 + 猜你喜欢等模块）。
 // 与番茄 App 同源——真实排行榜、个性化推荐流。
 func (c *Client) HomeFeed() ([]FeedSection, error) {
+	query := randomizeSessionParams(bookmallBusinessQuery)
 	body, err := c.postRaw("/api/fqapp/fetch", map[string]string{
 		"path":  "/reading/bookapi/bookmall/tab/v",
-		"query": bookmallBusinessQuery,
+		"query": query,
 	})
 	if err != nil {
 		return nil, err
@@ -393,6 +399,15 @@ func (c *Client) HomeFeed() ([]FeedSection, error) {
 		return nil, fmt.Errorf("feed 响应解析: %w", err)
 	}
 	if env.Code != 0 {
+		// 设备风控（ILLEGAL_ACCESS）→ 自动轮换设备后重试一次
+		if isRiskControl(env.Code, env.Message) {
+			rerr := c.recoverDevice()
+			if rerr == nil {
+				return c.HomeFeed()
+			}
+			return nil, fmt.Errorf("feed 上游 code=%d %s（设备已自动轮换但仍失败: %v）",
+				env.Code, env.Message, rerr)
+		}
 		return nil, fmt.Errorf("feed 上游 code=%d %s", env.Code, env.Message)
 	}
 	var data struct {
@@ -495,4 +510,102 @@ func (c *Client) HomeFeed() ([]FeedSection, error) {
 		}
 	}
 	return sections, nil
+}
+
+// ─── 设备风控自动恢复 ────────────────────────────────────────────────
+
+var (
+	recoverMu    sync.Mutex
+	lastRecovery time.Time
+)
+
+func isRiskControl(code int, message string) bool {
+	if code == 110 {
+		return true
+	}
+	m := strings.ToUpper(message)
+	return strings.Contains(m, "ILLEGAL_ACCESS") || strings.Contains(m, "设备信息风控") ||
+		strings.Contains(m, "请手动更新设备信息")
+}
+
+// recoverDevice 设备被风控时的自动轮换：注册新设备 → 落盘配置 → 重启服务 → 等待就绪。
+// 10 分钟内最多触发一次；重启依赖容器 restart: unless-stopped 策略拉起。
+func (c *Client) recoverDevice() error {
+	recoverMu.Lock()
+	defer recoverMu.Unlock()
+	if time.Since(lastRecovery) < 10*time.Minute {
+		return fmt.Errorf("设备轮换冷却中（10 分钟内已尝试过）")
+	}
+	lastRecovery = time.Now()
+
+	log.Printf("[unidbg] 检测到设备风控，开始自动轮换设备…")
+	regRaw, err := c.postRaw("/api/device/register", map[string]any{})
+	if err != nil {
+		return fmt.Errorf("register: %w", err)
+	}
+	var reg struct {
+		Success    bool           `json:"success"`
+		DeviceInfo map[string]any `json:"deviceInfo"`
+	}
+	if err := json.Unmarshal(regRaw, &reg); err != nil {
+		return fmt.Errorf("register 解析: %w", err)
+	}
+	if !reg.Success || reg.DeviceInfo == nil {
+		return fmt.Errorf("register 失败: %.120s", string(regRaw))
+	}
+	newID, _ := reg.DeviceInfo["deviceId"].(string)
+	log.Printf("[unidbg] 新设备已注册 deviceId=%s", newID)
+
+	// 落盘 yml（容器内 ./config/application.yml，挂载卷持久化）
+	if _, err := c.postRaw("/api/device/update-config", reg.DeviceInfo); err != nil {
+		log.Printf("[unidbg] update-config 警告: %v", err)
+	}
+
+	// 重启 JVM（docker restart: unless-stopped 自动拉起）；连接中断属预期
+	_, _ = c.postRaw("/api/device/restart", map[string]any{})
+
+	deadline := time.Now().Add(90 * time.Second)
+	for time.Now().Before(deadline) {
+		time.Sleep(4 * time.Second)
+		resp, err := c.HTTP.Get(c.BaseURL + "/api/fq-signature/health")
+		if err == nil {
+			resp.Body.Close()
+			log.Printf("[unidbg] 服务已就绪（新设备）")
+			return nil
+		}
+	}
+	return fmt.Errorf("重启后健康检查超时")
+}
+
+// randomizeSessionParams 每次请求随机化会话参数，模拟真实 App 的会话行为，
+// 降低静态参数重放触发设备风控的概率。
+func randomizeSessionParams(q string) string {
+	uid := newUUID()
+	ts := fmt.Sprintf("%d", time.Now().UnixMilli())
+	q = replaceParam(q, "session_uuid", uid)
+	q = replaceParam(q, "cold_start_session_id", uid)
+	q = replaceParam(q, "normal_session_id", uid+"%230")
+	q = replaceParam(q, "page_entry_time", ts)
+	q = replaceParam(q, "ecom_impression_start_time", ts)
+	return q
+}
+
+var paramRe = regexp.MustCompile(`([a-z_]+)=[^&]*`)
+
+func replaceParam(q, key, val string) string {
+	return paramRe.ReplaceAllStringFunc(q, func(m string) string {
+		if strings.HasPrefix(m, key+"=") {
+			return key + "=" + val
+		}
+		return m
+	})
+}
+
+func newUUID() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // RFC 4122 variant
+	h := hex.EncodeToString(b)
+	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
 }

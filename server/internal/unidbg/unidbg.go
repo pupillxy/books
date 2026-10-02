@@ -5,14 +5,17 @@ package unidbg
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -528,7 +531,9 @@ func isRiskControl(code int, message string) bool {
 		strings.Contains(m, "请手动更新设备信息")
 }
 
-// recoverDevice 设备被风控时的自动轮换：注册新设备 → 落盘配置 → 重启服务 → 等待就绪。
+// recoverDevice 设备被风控时的自动轮换：
+// 注册新设备 → 直接改写挂载的 application.yml（Java 服务的 update-config 不可靠）→
+// 通过 docker.sock 重启 fq-unidbg 容器 → 等待就绪。
 // 10 分钟内最多触发一次；重启依赖容器 restart: unless-stopped 策略拉起。
 func (c *Client) recoverDevice() error {
 	recoverMu.Lock()
@@ -556,13 +561,20 @@ func (c *Client) recoverDevice() error {
 	newID, _ := reg.DeviceInfo["deviceId"].(string)
 	log.Printf("[unidbg] 新设备已注册 deviceId=%s", newID)
 
-	// 落盘 yml（容器内 ./config/application.yml，挂载卷持久化）
-	if _, err := c.postRaw("/api/device/update-config", reg.DeviceInfo); err != nil {
-		log.Printf("[unidbg] update-config 警告: %v", err)
+	// 改写挂载的 application.yml（server 容器挂载了 ./fq-unidbg/config）
+	if yml := os.Getenv("XS_UNIDBG_CONFIG"); yml != "" {
+		if err := patchUnidbgYml(yml, reg.DeviceInfo); err != nil {
+			log.Printf("[unidbg] yml 写入警告: %v", err)
+		} else {
+			log.Printf("[unidbg] yml 已更新 deviceId=%s", newID)
+		}
 	}
 
-	// 重启 JVM（docker restart: unless-stopped 自动拉起）；连接中断属预期
-	_, _ = c.postRaw("/api/device/restart", map[string]any{})
+	// 重启容器（docker.sock 挂载时可用）；失败则尝试服务自带 restart 端点
+	if cerr := restartUnidbgContainer(); cerr != nil {
+		log.Printf("[unidbg] docker.sock 重启不可用（%v），退回服务内 restart 端点", cerr)
+		_, _ = c.postRaw("/api/device/restart", map[string]any{})
+	}
 
 	deadline := time.Now().Add(90 * time.Second)
 	for time.Now().Before(deadline) {
@@ -575,6 +587,92 @@ func (c *Client) recoverDevice() error {
 		}
 	}
 	return fmt.Errorf("重启后健康检查超时")
+}
+
+// restartUnidbgContainer 通过挂载的 docker.sock 重启 fq-unidbg 容器
+func restartUnidbgContainer() error {
+	sock := os.Getenv("DOCKER_SOCKET")
+	if sock == "" {
+		sock = "/var/run/docker.sock"
+	}
+	if _, err := os.Stat(sock); err != nil {
+		return fmt.Errorf("docker.sock 不存在: %w", err)
+	}
+	name := os.Getenv("XS_UNIDBG_CONTAINER")
+	if name == "" {
+		name = "fq-unidbg"
+	}
+	client := &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return net.Dial("unix", sock)
+			},
+		},
+		Timeout: 90 * time.Second,
+	}
+	resp, err := client.Post("http://localhost/v1.41/containers/"+name+"/restart?t=10", "", nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		return fmt.Errorf("docker restart HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// patchUnidbgYml 把新设备信息写进 fq-unidbg 的 application.yml（行级替换）
+func patchUnidbgYml(path string, dev map[string]any) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	get := func(k string) string {
+		v, _ := dev[k].(string)
+		return v
+	}
+	deviceKeys := map[string]string{
+		"cdid":         get("cdid"),
+		"device-brand": get("deviceBrand"),
+		"device-id":    get("deviceId"),
+		"device-type":  get("deviceType"),
+		"dpi":          get("dpi"),
+		"install-id":   get("installId"),
+		"resolution":   get("resolution"),
+		"rom-version":  get("romVersion"),
+		"host-abi":     get("hostAbi"),
+		"os-version":   get("osVersion"),
+	}
+	lines := strings.Split(string(raw), "\n")
+	inDevice := false
+	for i, ln := range lines {
+		if strings.HasPrefix(strings.TrimLeft(ln, " "), "device:") &&
+			strings.Count(ln[:len(ln)-len(strings.TrimLeft(ln, " "))], " ") == 4 {
+			inDevice = true
+			continue
+		}
+		if inDevice {
+			trimmed := strings.TrimLeft(ln, " ")
+			if trimmed != "" && !strings.HasPrefix(ln, "      ") {
+				inDevice = false
+				continue
+			}
+			key := strings.SplitN(trimmed, ":", 2)[0]
+			if v := deviceKeys[key]; v != "" {
+				indent := ln[:len(ln)-len(strings.TrimLeft(ln, " "))]
+				lines[i] = indent + key + ": '" + v + "'"
+			}
+		}
+	}
+	out := strings.Join(lines, "\n")
+	// user-agent / cookie（fq.api 层）
+	if ua := get("userAgent"); ua != "" {
+		out = regexp.MustCompile(`(?m)^(    user-agent: ).*$`).ReplaceAllString(out, "${1}"+ua)
+	}
+	if ck := get("cookie"); ck != "" {
+		out = regexp.MustCompile(`(?m)^(    cookie: ).*$`).ReplaceAllString(out, "${1}"+ck)
+	}
+	return os.WriteFile(path, []byte(out), 0o644)
 }
 
 // randomizeSessionParams 每次请求随机化会话参数，模拟真实 App 的会话行为，

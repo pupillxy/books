@@ -21,6 +21,8 @@ type BookHandler struct {
 	Scanner *scanner.Scanner
 	FQ      *fanqie.Client
 	UNI     *unidbg.Client
+	// RequestDownload 在正文两源都失败时被调用（自动触发整本获取，由 main 注入 storeH.triggerDownload）
+	RequestDownload func(fid, title string, bookID int64) string
 }
 
 func (h *BookHandler) List(c *gin.Context) {
@@ -103,13 +105,18 @@ func (h *BookHandler) Chapter(c *gin.Context) {
 
 	content, ctitle, ferr := h.fetchOnlineContent(book.FanqieID, srcID, ch.Title)
 	if len([]rune(content)) < 50 {
-		// 两个源都拿不到正文：付费章（网页端锁定）或上游限流
-		if errors.Is(ferr, fanqie.ErrChapterLocked) {
-			c.JSON(http.StatusPaymentRequired, gin.H{"error": "该章节为付费内容，需要离线缓存后阅读", "title": ctitle})
-			return
+		// 两个源都拿不到正文（新注册设备被内容接口风控/付费章锁定）：
+		// 自动在后台准备整本内容，用户稍后重试即可读到
+		locked := errors.Is(ferr, fanqie.ErrChapterLocked)
+		if h.RequestDownload != nil {
+			go func() { _ = h.RequestDownload(book.FanqieID, book.Title, book.ID) }()
 		}
-		log.Printf("[store] 在线拉取正文失败 book=%d idx=%d src=%s: %v", id, idx, srcID, ferr)
-		c.JSON(http.StatusBadGateway, gin.H{"error": "在线获取正文失败，请稍后重试"})
+		msg := "该章节正文获取中，已自动在后台准备整本内容，几分钟内重试即可阅读"
+		if locked {
+			msg = "该章节为会员内容，已自动在后台准备整本，几分钟后重试"
+		}
+		log.Printf("[store] 在线正文失败 book=%d idx=%d locked=%v: %v", id, idx, locked, ferr)
+		c.JSON(http.StatusPaymentRequired, gin.H{"error": msg, "title": ctitle})
 		return
 	}
 	_ = h.DB.FillChapterContent(id, idx, content)

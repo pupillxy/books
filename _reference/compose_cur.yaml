@@ -1,0 +1,45 @@
+services:
+  tomato-novel-downloader:
+    image: zhongbai233/tomato-novel-downloader-webui
+    container_name: tomato-novel-downloader
+    restart: unless-stopped
+    ports:
+      - "18003:18423"  # 映射WebUI端口
+    environment:
+      - TOMATO_WEB_ADDR=0.0.0.0:18423
+      - TOMATO_WEB_PASSWORD=lxy123456  # 设置您的密码
+    volumes:
+      - ./books:/app/books  # 持久化数据，可根据需要修改路径
+      - ./tnd/config.yml:/app/config.yml
+
+
+  xiaoshuo-server:
+    image: xiaoshuo-server:latest
+    container_name: xiaoshuo-server
+    restart: unless-stopped
+    ports:
+      - "18004:8080"
+    environment:
+      - TZ=Asia/Shanghai
+      - XS_ADMIN_USER=admin
+      - XS_ADMIN_PASS=admin123
+      - XS_JWT_SECRET=24ae675f446a4abc834380a7a61fae2742f17bc046ae43cdafce3a479a7fa4d4
+      - XS_TND_URL=http://tomato-novel-downloader:18423
+      - XS_UNIDBG_URL=http://fq-unidbg:9999
+      - XS_TND_PASSWORD=lxy123456
+      - XS_DOWNLOAD_DIR=/app/books
+    volumes:
+      - ./xiaoshuo_data:/data
+      - ./books:/app/books
+    depends_on:
+      - tomato-novel-downloader
+  fq-unidbg:
+    image: fq-unidbg:latest
+    container_name: fq-unidbg
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9999:9999"
+    environment:
+      - TZ=Asia/Shanghai
+    volumes:
+      - ./fq-unidbg/config:/app/config

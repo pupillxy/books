@@ -225,7 +225,7 @@ func (c *Client) Search(query string, count int) ([]Book, error) {
 	var out struct {
 		Books []searchBook `json:"books"`
 	}
-	err := c.getJSON(fmt.Sprintf("/api/fqsearch/books?query=%s&count=%d", url.QueryEscape(query), count), &out)
+	err := c.getJSON(fmt.Sprintf("/api/fqsearch/books?query=%s&count=%d&tabType=1", url.QueryEscape(query), count), &out)
 	if err != nil {
 		return nil, err
 	}

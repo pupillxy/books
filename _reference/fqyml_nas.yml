@@ -1,0 +1,20 @@
+fq:
+  api:
+    base-url: https://api5-normal-sinfonlineb.fqnovel.com
+    cookie: store-region=cn-zj; store-region-src=did; install_id=5812189569404316;
+    device:
+      aid: '1967'
+      cdid: 'fb49abe0-5172-4693-b1b3-bdfcfddcb120'
+      device-brand: 'vivo'
+      device-id: '4559036707882573'
+      device-type: 'PD1924'
+      dpi: '320'
+      host-abi: 'armeabi-v7a'
+      install-id: '5812189569404316'
+      resolution: '1600*900'
+      rom-version: 'V394IR+release-keys'
+      update-version-code: '68132'
+      version-code: '68132'
+      version-name: 6.8.1.32
+    user-agent: com.dragon.read.oversea.gp/68132 (Linux; U; Android 11; zh_CN; PD1924; Build/V394IR;tt-ok/3.12.13.4-tiktok)
+      Build/V417IR;tt-ok/3.12.13.4-tiktok)

@@ -21,8 +21,8 @@
 |---|---|---|---|
 | 番茄·书城浏览/榜单（近似） | 网页端 fanqienovel.com | `server/internal/fanqie/client.go`、`searchweb.go`、`abogus.go` | 免登录抓取 + a_bogus 签名；被风控时负缓存 60s |
 | 番茄·App 书城 feed（真实排行榜） | unidbg 服务 | `server/internal/unidbg/unidbg.go` `HomeFeed()` | `GET /api/store/appfeed`；解析 bookmall/tab 推荐流 |
-| 番茄·搜索/详情/目录 | 网页优先 → unidbg 兜底 | `handler/store.go` `getBookDetail`/`getChapters` | 网页被风控不再导致详情页失败 |
-| 番茄·章节正文（在线读） | 按需回源：网页 → unidbg 兜底 | `handler/book.go` `Chapter`+`fetchOnlineContent` | 读到哪章拉哪章并缓存（FillChapterContent），预取下一章；付费章 402 |
+| 番茄·搜索/详情/目录 | **App 协议优先**（unidbg）→ 网页兜底 | `handler/store.go` `Search`/`getBookDetail`/`getChapters` | App 搜索在 NAS 偶发服务层 NPE（"Cannot read the array length"），网页兜底覆盖 |
+| 番茄·章节正文（在线读） | 按需回源：**App 协议优先** → 网页兜底 | `handler/book.go` `Chapter`+`fetchOnlineContent` | 读到哪章拉哪章并缓存（FillChapterContent），预取下一章；付费章 402 |
 | 番茄·整本离线缓存 | unidbg 下载器（TND 兜底） | `unidbg.DownloadBook`、`store.go triggerDownload` | 3s/批、断点续传；仅显式触发（`?download=1` 或 POST /download） |
 | 短剧 | 红果 App 协议 | `server/internal/hongguo/` | 与番茄无关，独立风控（锁版本 73532） |
 | 追更 | 每日目录刷新 | `handler/updater.go` | **只刷目录元数据**，新章节靠按需回源，不再批量下载 |

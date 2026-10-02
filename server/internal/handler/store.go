@@ -46,8 +46,13 @@ type storeDetailCacheEntry struct {
 	err      error // 非 nil 表示负缓存
 }
 
-// getBookDetail 详情抓取：/page/ 被风控限流时退 reader 页兜底，再退 unidbg（App 协议）
+// getBookDetail 详情抓取：App 协议优先（unidbg），网页端兜底（/page/ → reader 页）
 func (h *StoreHandler) getBookDetail(fid string) (*fanqie.BookDetail, error) {
+	if h.UNI.Enabled() {
+		if d, uerr := h.uniBookDetail(fid); uerr == nil {
+			return d, nil
+		}
+	}
 	detail, err := h.FQ.GetBookDetail(fid)
 	if err == nil {
 		return detail, nil
@@ -55,9 +60,6 @@ func (h *StoreHandler) getBookDetail(fid string) (*fanqie.BookDetail, error) {
 	detail, rerr := h.FQ.GetBookDetailViaReader(fid)
 	if rerr == nil {
 		return detail, nil
-	}
-	if d, uerr := h.uniBookDetail(fid); uerr == nil {
-		return d, nil
 	}
 	return nil, rerr
 }
@@ -77,24 +79,24 @@ func (h *StoreHandler) uniBookDetail(fid string) (*fanqie.BookDetail, error) {
 	}, nil
 }
 
-// getChapters 目录：网页端优先，被风控时退 unidbg 目录（App 协议，数据同源）
+// getChapters 目录：App 协议优先（unidbg），网页端兜底
 func (h *StoreHandler) getChapters(fid string) ([]fanqie.ChapterInfo, error) {
-	chapters, err := h.FQ.GetChapters(fid)
-	if err == nil {
-		return chapters, nil
-	}
 	if h.UNI.Enabled() {
 		if metas, uerr := h.UNI.Directory(fid); uerr == nil {
 			out := make([]fanqie.ChapterInfo, 0, len(metas))
 			for i, m := range metas {
 				idx := m.Index
 				if idx < 0 {
-					idx = i // chapter_index 缺失时按序补
+					idx = i
 				}
 				out = append(out, fanqie.ChapterInfo{ID: m.ItemID, Index: idx + 1, Title: m.Title})
 			}
 			return out, nil
 		}
+	}
+	chapters, err := h.FQ.GetChapters(fid)
+	if err == nil {
+		return chapters, nil
 	}
 	return nil, err
 }
@@ -196,25 +198,47 @@ func (h *StoreHandler) markBooks(books []fanqie.LibraryBook) {
 	}
 }
 
-// Search 书城搜索（网页端）：/store/search?query=剑来&offset=0&count=10
+// Search 书城搜索：App 协议优先（unidbg），失败退网页端
 func (h *StoreHandler) Search(c *gin.Context) {
 	query := strings.TrimSpace(c.Query("query"))
+	offset := clampQuery(c.Query("offset"), 0, 0, 100000)
+	count := clampQuery(c.Query("count"), 10, 1, 50)
 	if query == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "query 不能为空"})
+		c.JSON(http.StatusOK, gin.H{"items": []fanqie.LibraryBook{}})
 		return
 	}
-	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
-	count := clampQuery(c.Query("count"), 10, 1, 20)
-	if offset < 0 {
-		offset = 0
+
+	var books []fanqie.LibraryBook
+	var appErr error
+	if h.UNI.Enabled() {
+		if results, err := h.UNI.Search(query, count); err == nil {
+			books = make([]fanqie.LibraryBook, 0, len(results))
+			for _, b := range results {
+				books = append(books, fanqie.LibraryBook{
+					ID: b.BookID, Title: b.BookName, Author: b.Author,
+					Synopsis: b.Description,
+				})
+			}
+		} else {
+			appErr = err
+			log.Printf("[store] App 搜索失败 %q: %v", query, err)
+		}
 	}
-	books, err := h.FQ.SearchWeb(query, offset, count)
-	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "搜索失败: " + err.Error()})
-		return
+	if books == nil {
+		var err error
+		books, err = h.FQ.SearchWeb(query, offset, count)
+		if err != nil {
+			if appErr != nil {
+				c.JSON(http.StatusBadGateway, gin.H{"error": "搜索失败（App+网页均不可用）"})
+			} else {
+				c.JSON(http.StatusBadGateway, gin.H{"error": "搜索失败: " + err.Error()})
+			}
+			return
+		}
+		books = books[:minInt(count, len(books))]
 	}
 	h.markBooks(books)
-	c.JSON(http.StatusOK, gin.H{"items": books, "offset": offset})
+	c.JSON(http.StatusOK, gin.H{"items": books})
 }
 
 // ─── 预设榜单（App 推荐榜卡的网页端近似）───────────────────────────────

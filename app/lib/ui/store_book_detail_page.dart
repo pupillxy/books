@@ -196,6 +196,7 @@ class _StoreBookDetailPageState extends ConsumerState<StoreBookDetailPage> {
     }
 
     final d = _detail!;
+    // ignore: unused_local_variable
     final inLib = d.inLibrary;
     final onShelf = d.onShelf;
     final busy = _busy;
@@ -245,57 +246,39 @@ class _StoreBookDetailPageState extends ConsumerState<StoreBookDetailPage> {
           ],
           body: Column(
             children: [
-              // ---------- 按钮区：进页已自动入库下载；书架始终可操作 ----------
-              // 未入库：左「免费阅读」+ 右「加入书架」；
-              // 已入库：左「加入书架/已在书架」+ 右「开始阅读」（自动入库不加书架，按钮不能消失）
+              // ---------- 按钮区：位置固定，只随状态变文案 ----------
+              // 左槽恒为「加入书架」（已入库则显示已在书架）；
+              // 右槽恒为阅读主按钮：全本就绪 → 开始阅读；在线/下载中 → 免费阅读（按需在线读）
               Padding(
                 padding: const EdgeInsets.fromLTRB(18, 12, 18, 0),
-                child: inLib
-                    ? Row(
-                        children: [
-                          Expanded(
-                            child: GhostButton(
-                              label: onShelf ? '已在书架' : (busy ? '处理中…' : '加入书架'),
-                              icon: onShelf
-                                  ? Icons.check_circle_outline
-                                  : Icons.add_circle_outline,
-                              onPressed: onShelf || busy ? null : _addToLibrary,
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            flex: 2,
-                            child: GradientButton(
-                              label: '开始阅读',
-                              icon: switch (d.status) {
-                                'downloading' => Icons.downloading_rounded,
-                                'ready' => Icons.download_done_rounded,
-                                _ => Icons.menu_book_rounded,
-                              },
-                              onPressed: busy ? null : _openReader,
-                            ),
-                          ),
-                        ],
-                      )
-                    : Row(
-                        children: [
-                          Expanded(
-                            child: GhostButton(
-                              label: '免费阅读',
-                              icon: Icons.menu_book_rounded,
-                              onPressed: _openFreeRead,
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: GradientButton(
-                              label: busy ? '处理中…' : '加入书架',
-                              icon: Icons.add_circle_outline,
-                              onPressed: busy ? null : _addToLibrary,
-                            ),
-                          ),
-                        ],
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: GhostButton(
+                        label: onShelf
+                            ? '已在书架'
+                            : (busy ? '处理中…' : '加入书架'),
+                        icon: onShelf
+                            ? Icons.check_circle_outline
+                            : Icons.add_circle_outline,
+                        onPressed: onShelf || busy ? null : _addToLibrary,
                       ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      flex: 2,
+                      child: GradientButton(
+                        label: d.status == 'ready' ? '开始阅读' : '免费阅读',
+                        icon: d.status == 'ready'
+                            ? Icons.download_done_rounded
+                            : Icons.menu_book_rounded,
+                        onPressed: d.status == 'ready'
+                            ? _openReader
+                            : _openFreeRead,
+                      ),
+                    ),
+                  ],
+                ),
               ),
               const SizedBox(height: 10),
               // ---------- Tab ----------

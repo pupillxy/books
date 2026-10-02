@@ -359,7 +359,7 @@ type FeedBook struct {
 	Abstract   string `json:"abstract"`
 	Category   string `json:"category"`
 	ThumbURL   string `json:"thumb_url"`
-	ReadCount  string `json:"read_count"`  // 形如 "3292人在读"
+	ReadCount  string `json:"read_count"`  // read_cnt_text，形如 "3292人在读"
 	RankScore  string `json:"rank_score"`  // 形如 "9243万热度"
 	Score      string `json:"score"`
 	Tags       string `json:"tags"`

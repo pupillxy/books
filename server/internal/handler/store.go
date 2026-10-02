@@ -537,14 +537,25 @@ func (h *StoreHandler) triggerDownload(fid, title string, bookID int64) string {
 	}
 	_ = h.DB.SetBookStatus(bookID, "downloading")
 	if h.UNI.Enabled() {
-		// 自建 unidbg 下载器：SO 在 unidbg 内自算签名，批量拉正文增量回填 DB
+		// 自建 unidbg 下载器：SO 在 unidbg 内自算签名，批量拉正文增量回填 DB；
+		// 失败时（正文接口对新设备风控等）自动落到 TND 兜底
 		go func() {
 			_ = h.DB.SetDownloadTaskStatus(fid, "running")
 			if err := h.UNI.DownloadBook(h.DB, bookID, fid, title); err != nil {
-				log.Printf("[unidbg] 整本下载失败 %s: %v", title, err)
-				_ = h.DB.SetDownloadTaskStatus(fid, "failed")
-				_ = h.DB.SetBookStatus(bookID, "online")
-				return
+				log.Printf("[unidbg] 整本下载失败 %s: %v，尝试 TND 兜底", title, err)
+				if !h.TND.Enabled() {
+					_ = h.DB.SetDownloadTaskStatus(fid, "failed")
+					_ = h.DB.SetBookStatus(bookID, "online")
+					return
+				}
+				if err2 := h.TND.RequestDownload(fid, title); err2 != nil {
+					log.Printf("[tnd] 兜底下载也失败 %s: %v", title, err2)
+					_ = h.DB.SetDownloadTaskStatus(fid, "failed")
+					_ = h.DB.SetBookStatus(bookID, "online")
+					return
+				}
+				log.Printf("[tnd] 兜底下载已接管 %s", title)
+				return // TND 完成后由 scanner 导入并置 ready
 			}
 			_ = h.DB.SetDownloadTaskStatus(fid, "ready")
 			_ = h.DB.SetBookStatus(bookID, "ready")

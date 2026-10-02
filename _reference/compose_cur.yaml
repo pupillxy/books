@@ -26,11 +26,15 @@ services:
       - XS_JWT_SECRET=24ae675f446a4abc834380a7a61fae2742f17bc046ae43cdafce3a479a7fa4d4
       - XS_TND_URL=http://tomato-novel-downloader:18423
       - XS_UNIDBG_URL=http://fq-unidbg:9999
+      - XS_UNIDBG_CONFIG=/mnt/fq-unidbg-config/application.yml
+      - XS_UNIDBG_CONTAINER=fq-unidbg
       - XS_TND_PASSWORD=lxy123456
       - XS_DOWNLOAD_DIR=/app/books
     volumes:
       - ./xiaoshuo_data:/data
       - ./books:/app/books
+      - ./fq-unidbg/config:/mnt/fq-unidbg-config
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       - tomato-novel-downloader
   fq-unidbg:

@@ -201,6 +201,9 @@ class StoreBook {
   final String author;
   final String synopsis;
   final String cover;
+  final bool finished;
+  final String wordCount;
+  final String readCount;
   final bool inLibrary;
   final int localBookId;
   final String localStatus;
@@ -212,6 +215,9 @@ class StoreBook {
     required this.author,
     required this.synopsis,
     required this.cover,
+    this.finished = false,
+    this.wordCount = '',
+    this.readCount = '',
     this.inLibrary = false,
     this.localBookId = 0,
     this.localStatus = '',
@@ -224,6 +230,9 @@ class StoreBook {
         author: (j['author'] ?? '') as String,
         synopsis: (j['synopsis'] ?? '') as String,
         cover: (j['cover'] ?? '') as String,
+        finished: (j['finished'] ?? false) as bool,
+        wordCount: (j['word_count'] ?? '') as String,
+        readCount: (j['read_count'] ?? '') as String,
         inLibrary: (j['in_library'] ?? false) as bool,
         localBookId: (j['book_id'] as num?)?.toInt() ?? 0,
         localStatus: (j['status'] ?? '') as String,

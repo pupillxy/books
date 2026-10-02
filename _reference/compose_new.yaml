@@ -28,6 +28,7 @@ services:
       - XS_UNIDBG_URL=http://fq-unidbg:9999
       - XS_UNIDBG_CONFIG=/mnt/fq-unidbg-config/application.yml
       - XS_UNIDBG_CONTAINER=fq-unidbg
+      - XS_UNIDBG_ROTATE=1
       - XS_TND_PASSWORD=lxy123456
       - XS_DOWNLOAD_DIR=/app/books
     volumes:

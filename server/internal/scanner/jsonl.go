@@ -126,7 +126,7 @@ func (s *Scanner) importTND(dir string) bool {
 				}
 				if idx, ok := srcIdx[chapterIDs[i]]; ok && idx >= 0 {
 					if _, dup := placed[idx]; !dup {
-						placed[idx] = model.Chapter{Idx: idx, Title: ch.Title, Content: ch.Content}
+						placed[idx] = model.Chapter{Idx: idx, Title: ch.Title, Content: ch.Content, SrcID: chapterIDs[i]}
 						used[i] = true
 						if idx > maxIdx {
 							maxIdx = idx
@@ -154,7 +154,7 @@ func (s *Scanner) importTND(dir string) bool {
 		} else {
 			// 下载中：按 idx 回填已下章节，保留其余章节的在线兜底 meta
 			for _, ch := range chapters {
-				if err := s.DB.UpsertChapterContent(book.ID, ch.Idx, ch.Title, ch.Content); err != nil {
+				if err := s.DB.UpsertChapterContentSrc(book.ID, ch.Idx, ch.Title, ch.Content, ch.SrcID); err != nil {
 					log.Printf("[scanner] TND 章节回填失败 %s #%d: %v", st.BookName, ch.Idx, err)
 					return false
 				}

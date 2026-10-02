@@ -236,13 +236,13 @@ func (s *DBStore) ReplaceChapters(bookID int64, chapters []model.Chapter) error 
 	if _, err := tx.Exec(`DELETE FROM chapters WHERE book_id = ?`, bookID); err != nil {
 		return err
 	}
-	stmt, err := tx.Prepare(`INSERT INTO chapters (book_id, idx, title, content) VALUES (?, ?, ?, ?)`)
+	stmt, err := tx.Prepare(`INSERT INTO chapters (book_id, idx, title, content, src_id) VALUES (?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 	for _, ch := range chapters {
-		if _, err := stmt.Exec(bookID, ch.Idx, ch.Title, ch.Content); err != nil {
+		if _, err := stmt.Exec(bookID, ch.Idx, ch.Title, ch.Content, ch.SrcID); err != nil {
 			return err
 		}
 	}
@@ -254,6 +254,14 @@ func (s *DBStore) UpsertChapterContent(bookID int64, idx int, title, content str
 	_, err := s.Exec(`INSERT INTO chapters (book_id, idx, title, content) VALUES (?, ?, ?, ?)
 		ON CONFLICT(book_id, idx) DO UPDATE SET title=excluded.title, content=excluded.content`,
 		bookID, idx, title, content)
+	return err
+}
+
+// UpsertChapterContentSrc 按 idx 回填/插入章节内容（可带 src_id；冲突时保留原 src_id）
+func (s *DBStore) UpsertChapterContentSrc(bookID int64, idx int, title, content, srcID string) error {
+	_, err := s.Exec(`INSERT INTO chapters (book_id, idx, title, content, src_id) VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(book_id, idx) DO UPDATE SET title=excluded.title, content=excluded.content`,
+		bookID, idx, title, content, srcID)
 	return err
 }
 

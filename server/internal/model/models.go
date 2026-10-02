@@ -35,6 +35,7 @@ type Chapter struct {
 	Idx     int    `json:"idx"`
 	Title   string `json:"title"`
 	Content string `json:"content"`
+	SrcID   string `json:"src_id,omitempty"` // 番茄在线章节 item_id（TND/在线导入时保留）
 }
 
 // DownloadTask TND 下载任务

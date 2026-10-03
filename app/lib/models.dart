@@ -583,8 +583,23 @@ class FeedSection {
   final String title;
   final String subtitle;
   final List<FeedBook> books;
+  // 猜你喜欢瀑布流分页游标（仅个性化 feed 分区携带）
+  final String cellId;
+  final String planId;
+  final int algoType;
+  final int nextOffset;
 
-  const FeedSection({required this.title, required this.subtitle, required this.books});
+  const FeedSection({
+    required this.title,
+    required this.subtitle,
+    required this.books,
+    this.cellId = '',
+    this.planId = '',
+    this.algoType = 0,
+    this.nextOffset = 0,
+  });
+
+  bool get paginatable => cellId.isNotEmpty && nextOffset > 0;
 
   factory FeedSection.fromJson(Map<String, dynamic> j) => FeedSection(
         title: (j['title'] ?? '') as String,
@@ -592,7 +607,24 @@ class FeedSection {
         books: ((j['books'] as List?) ?? const [])
             .map((e) => FeedBook.fromJson(e as Map<String, dynamic>))
             .toList(),
+        cellId: (j['cell_id'] ?? '') as String,
+        planId: (j['plan_id'] ?? '') as String,
+        algoType: (j['algo_type'] as num?)?.toInt() ?? 0,
+        nextOffset: (j['next_offset'] as num?)?.toInt() ?? 0,
       );
+}
+
+/// 瀑布流翻页结果
+class FeedPageResult {
+  final List<FeedBook> books;
+  final int nextOffset;
+  final bool hasMore;
+
+  const FeedPageResult({
+    required this.books,
+    required this.nextOffset,
+    required this.hasMore,
+  });
 }
 
 /// App 推荐流中的一本书

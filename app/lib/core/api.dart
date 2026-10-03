@@ -238,6 +238,23 @@ class ApiClient {
         .toList();
   }
 
+  /// 猜你喜欢瀑布流翻页（cell 参数来自 appfeed 分区下发）
+  Future<FeedPageResult> storeAppFeedPage({
+    required String cellId,
+    required String planId,
+    required int offset,
+  }) async {
+    final j = await _get<Map<String, dynamic>>('/api/store/appfeed/page',
+        query: {'cell_id': cellId, 'plan_id': planId, 'offset': '$offset'});
+    return FeedPageResult(
+      books: ((j['books'] as List?) ?? const [])
+          .map((e) => FeedBook.fromJson(e as Map<String, dynamic>))
+          .toList(),
+      nextOffset: (j['next_offset'] as num?)?.toInt() ?? offset,
+      hasMore: (j['has_more'] ?? false) as bool,
+    );
+  }
+
   /// 书库分类树（gender: '1'=男生 '0'=女生，分组 label: 主分类/主题/角色/情节）
   Future<List<LibCategory>> storeLibraryCategories(String gender) async {
     final j = await _get<Map<String, dynamic>>('/api/store/library/categories',

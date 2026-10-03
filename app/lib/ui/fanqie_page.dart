@@ -32,6 +32,14 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
   bool _feedLoading = true;
   String? _feedError;
 
+  // ── 推荐频道：猜你喜欢瀑布流翻页（与子榜切换无关）──
+  String _feedCellId = '';
+  String _feedPlanId = '';
+  int _feedNextOffset = 0;
+  bool _feedHasMore = false;
+  bool _feedPageLoading = false;
+  List<FeedBook> _feedPageBooks = const [];
+
   // ── 推荐频道：榜单卡子榜 ──
   static const _rankTabs = ['推荐榜', '完本榜', '巅峰榜', '新书榜'];
   static const _boardKeys = {0: '', 1: 'finished', 2: 'peak', 3: 'new'};
@@ -70,6 +78,13 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
       setState(() {
         _feedSections = secs;
         _feedLoading = false;
+        // 取瀑布流分页游标（猜你喜欢分区下发）
+        final paginatable = secs.where((s) => s.paginatable).toList();
+        _feedCellId = paginatable.isNotEmpty ? paginatable.first.cellId : '';
+        _feedPlanId = paginatable.isNotEmpty ? paginatable.first.planId : '';
+        _feedNextOffset = paginatable.isNotEmpty ? paginatable.first.nextOffset : 0;
+        _feedHasMore = _feedCellId.isNotEmpty;
+        _feedPageBooks = const [];
       });
     } on ApiException catch (e) {
       if (!mounted) return;
@@ -77,6 +92,26 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
         _feedLoading = false;
         _feedError = e.message;
       });
+    }
+  }
+
+  // ── 猜你喜欢瀑布流翻页（滚动近底部自动触发）──────────────────────
+  Future<void> _loadFeedPage() async {
+    if (_feedPageLoading || !_feedHasMore || _feedCellId.isEmpty) return;
+    setState(() => _feedPageLoading = true);
+    try {
+      final r = await _api.storeAppFeedPage(
+          cellId: _feedCellId, planId: _feedPlanId, offset: _feedNextOffset);
+      if (!mounted) return;
+      setState(() {
+        _feedPageBooks = [..._feedPageBooks, ...r.books];
+        _feedNextOffset = r.nextOffset;
+        _feedHasMore = r.hasMore;
+        _feedPageLoading = false;
+      });
+    } on ApiException {
+      if (!mounted) return;
+      setState(() => _feedPageLoading = false);
     }
   }
 
@@ -289,7 +324,16 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
       ]);
     }
 
-    return ListView(
+    return NotificationListener<ScrollNotification>(
+      onNotification: (n) {
+        // 滚动近底部自动加载猜你喜欢瀑布流下一页（官方同构）
+        if (n.metrics.axis == Axis.vertical &&
+            n.metrics.pixels >= n.metrics.maxScrollExtent - 800) {
+          _loadFeedPage();
+        }
+        return false;
+      },
+      child: ListView(
       physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.only(bottom: 32),
       children: [
@@ -360,6 +404,7 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
         ),
         _buildRecFeed(context),
       ],
+      ),
     );
   }
 
@@ -512,7 +557,7 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         for (final sec in sections)
-          if (sec.books.isNotEmpty) ...[
+          if (sec.books.isNotEmpty || sec.paginatable) ...[
             Padding(
               padding: const EdgeInsets.fromLTRB(14, 18, 14, 4),
               child: Text(sec.title,
@@ -533,7 +578,28 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
                   finished: sec.books[i].finished,
                   onTap: () =>
                       _openDetail(sec.books[i].id, sec.books[i].title)),
+            if (sec.paginatable)
+              for (var i = 0; i < _feedPageBooks.length; i++)
+                _FeedTile(
+                    title: _feedPageBooks[i].title,
+                    author: _feedPageBooks[i].author,
+                    cover: _feedPageBooks[i].cover,
+                    metric: _feedPageBooks[i].rankScore.isNotEmpty
+                        ? _feedPageBooks[i].rankScore
+                        : _feedPageBooks[i].readCount,
+                    finished: _feedPageBooks[i].finished,
+                    onTap: () => _openDetail(
+                        _feedPageBooks[i].id, _feedPageBooks[i].title)),
           ],
+        if (_feedHasMore)
+          SizedBox(
+            height: 52,
+            child: Center(
+              child: _feedPageLoading
+                  ? const CircularProgressIndicator(strokeWidth: 2)
+                  : const SizedBox.shrink(),
+            ),
+          ),
       ],
     );
   }

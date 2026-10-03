@@ -717,6 +717,45 @@ func (h *StoreHandler) triggerDownload(fid, title string, bookID int64) string {
 	return "pending"
 }
 
+// storeFeedBook App feed 书籍条目输出（AppFeed/AppFeedPage 共用）
+type storeFeedBook struct {
+	ID        string `json:"id"`
+	Title     string `json:"title"`
+	Author    string `json:"author"`
+	Synopsis  string `json:"synopsis"`
+	Cover     string `json:"cover"`
+	Finished  bool   `json:"finished"`
+	ReadCount string `json:"read_count"`
+	Score     string `json:"score,omitempty"`
+	RankScore string `json:"rank_score,omitempty"`
+	Category  string `json:"category,omitempty"`
+	Tags      string `json:"tags,omitempty"`
+}
+
+// storeFeedSection App feed 分区输出（猜你喜欢分区带分页游标）
+type storeFeedSection struct {
+	Title      string          `json:"title"`
+	Subtitle   string          `json:"subtitle,omitempty"`
+	Books      []storeFeedBook `json:"books"`
+	CellID     string          `json:"cell_id,omitempty"`
+	PlanID     string          `json:"plan_id,omitempty"`
+	AlgoType   int             `json:"algo_type,omitempty"`
+	NextOffset int             `json:"next_offset,omitempty"`
+}
+
+func feedBooksOut(books []unidbg.FeedBook) []storeFeedBook {
+	booksOut := make([]storeFeedBook, 0, len(books))
+	for _, b := range books {
+		booksOut = append(booksOut, storeFeedBook{
+			ID: b.BookID, Title: b.BookName, Author: b.Author,
+			Synopsis: b.Abstract, Cover: b.ThumbURL, Finished: b.Finished,
+			ReadCount: b.ReadCount, Score: b.Score, RankScore: b.RankScore,
+			Category: b.Category, Tags: b.Tags,
+		})
+	}
+	return booksOut
+}
+
 // AppFeed App 书城首页 feed（与番茄 App 同源：实时热度排行榜等模块）
 func (h *StoreHandler) AppFeed(c *gin.Context) {
 	if !h.UNI.Enabled() {
@@ -728,38 +767,38 @@ func (h *StoreHandler) AppFeed(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "获取 App feed 失败: " + err.Error()})
 		return
 	}
-	type bookOut struct {
-		ID        string `json:"id"`
-		Title     string `json:"title"`
-		Author    string `json:"author"`
-		Synopsis  string `json:"synopsis"`
-		Cover     string `json:"cover"`
-		Finished  bool   `json:"finished"`
-		ReadCount string `json:"read_count"`
-		Score     string `json:"score,omitempty"`
-		RankScore string `json:"rank_score,omitempty"`
-		Category  string `json:"category,omitempty"`
-		Tags      string `json:"tags,omitempty"`
-	}
-	type secOut struct {
-		Title    string    `json:"title"`
-		Subtitle string    `json:"subtitle,omitempty"`
-		Books    []bookOut `json:"books"`
-	}
-	out := make([]secOut, 0, len(secs))
+	out := make([]storeFeedSection, 0, len(secs))
 	for _, s := range secs {
-		books := make([]bookOut, 0, len(s.Books))
-		for _, b := range s.Books {
-			books = append(books, bookOut{
-				ID: b.BookID, Title: b.BookName, Author: b.Author,
-				Synopsis: b.Abstract, Cover: b.ThumbURL, Finished: b.Finished,
-				ReadCount: b.ReadCount, Score: b.Score, RankScore: b.RankScore,
-				Category: b.Category, Tags: b.Tags,
-			})
-		}
-		out = append(out, secOut{Title: s.Title, Subtitle: s.Subtitle, Books: books})
+		out = append(out, storeFeedSection{
+			Title: s.Title, Subtitle: s.Subtitle, Books: feedBooksOut(s.Books),
+			CellID: s.CellID, PlanID: s.PlanID, AlgoType: s.AlgoType, NextOffset: s.NextOffset,
+		})
 	}
 	c.JSON(http.StatusOK, gin.H{"sections": out})
+}
+// AppFeedPage 猜你喜欢瀑布流翻页：App 传 appfeed 下发的 cell_id/plan_id/offset，
+// 服务端原样回放官方 cell/change 协议（10/03 实测）。
+func (h *StoreHandler) AppFeedPage(c *gin.Context) {
+	if !h.UNI.Enabled() {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "unidbg 服务未配置（XS_UNIDBG_URL）"})
+		return
+	}
+	cellID := c.Query("cell_id")
+	if cellID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "缺少 cell_id"})
+		return
+	}
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	books, nextOffset, hasMore, err := h.UNI.FeedPage(cellID, c.DefaultQuery("plan_id", "0"), offset)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "获取瀑布流翻页失败: " + err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"books":       feedBooksOut(books),
+		"next_offset": nextOffset,
+		"has_more":    hasMore,
+	})
 }
 
 // Downloads 下载任务列表

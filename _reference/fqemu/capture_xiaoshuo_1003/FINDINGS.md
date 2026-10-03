@@ -137,3 +137,14 @@ Hook 点：`com.bytedance.frameworks.baselib.network.http.NetworkParams.tryAddSe
 - 官方卡片视觉上固定展示 8 本（2×4），limit=16 是协议批量，9-16 不直接铺在页面上
 - 结论：App 复刻应「卡片 top8 + 下方独立瀑布流」，9-16 不要渲染成列表挂在卡片下
   （会让用户误以为瀑布流跟榜联动）——fanqie_page.dart 已按此改造
+
+## 猜你喜欢瀑布流翻页协议 — 实测（scroll2_urls.jsonl + 生产回放）
+- 官方推荐频道下方瀑布流 = **「猜你喜欢」个性化 feed**（AGENTS §9 未接项，本次接通）
+- 翻页请求：`cell/change/v?change_type=0&limit=10&cell_id=7011478717935386631&offset=12→24→36…&client_req_type=2&algo_type=167&tab_type=2&plan_id=0`
+  - offset 起点 = tab/v 首屏内嵌卡片数（实测 12，含视频卡）；每页推进 = 响应实际卡片数（12）
+  - **响应 data 自带 has_more / next_offset**，游标不用自己数
+  - 响应结构：cell_view.cell_data 可多层嵌套，书卡在 book_data，漫剧卡是 video_data（无书）
+  - feed cell_id（7011478717935386631）与榜单卡 cell_id 一样是服务端内容 ID，跨设备稳定
+- server：appfeed 分区透传 cell_id/plan_id/algo_type/next_offset；
+  新端点 `/api/store/appfeed/page`（AppFeedPage→FeedPage）回放翻页，生产已验证
+- tab/v 在 unidbg 侧被内容风控期间（code=110）翻页端点仍可用，二者风控相互独立

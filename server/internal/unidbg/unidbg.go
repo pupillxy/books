@@ -382,6 +382,39 @@ type FeedSection struct {
 	Title    string     `json:"title"`
 	Subtitle string     `json:"subtitle,omitempty"`
 	Books    []FeedBook `json:"books"`
+	// 猜你喜欢个性化瀑布流的分页游标（仅 feed cell 携带，10/03 抓包实测）
+	CellID     string `json:"cell_id,omitempty"`
+	PlanID     string `json:"plan_id,omitempty"`
+	AlgoType   int    `json:"algo_type,omitempty"`
+	NextOffset int    `json:"next_offset,omitempty"`
+}
+
+// feedBookSrc bookmall cell 里的书籍源字段（HomeFeed/FeedPage 共用）
+type feedBookSrc struct {
+	BookID      string `json:"book_id"`
+	BookName    string `json:"book_name"`
+	Author      string `json:"author"`
+	Abstract    string `json:"abstract"`
+	Category    string `json:"category"`
+	ThumbURL    string `json:"thumb_url"`
+	ReadCount   string `json:"read_count"`
+	RankScore   string `json:"rank_score"`
+	Score       string `json:"score"`
+	Tags        string `json:"tags"`
+	SerialCount string `json:"serial_count"`
+	Creation    string `json:"creation_status"`
+}
+
+// tabCell 书城 feed 的一个 cell（模块卡/瀑布流卡片，可任意嵌套）
+type tabCell struct {
+	CellName  string        `json:"cell_name"`
+	CellAlias string        `json:"cell_alias"`
+	CellID    string        `json:"cell_id"`
+	PlanID    string        `json:"plan_id"`
+	AlgoType  int           `json:"algo_type"`
+	Algo      int           `json:"algo"`
+	BookData  []feedBookSrc `json:"book_data"`
+	CellData  []tabCell     `json:"cell_data"`
 }
 
 // HomeFeed 拉取 App 书城首页 feed（推荐 tab：排行榜 + 猜你喜欢等模块）。
@@ -394,27 +427,8 @@ func (c *Client) HomeFeed() ([]FeedSection, error) {
 	}
 	var parsed struct {
 		TabItem []struct {
-			Title    string `json:"title"`
-			CellData []struct {
-				CellName  string `json:"cell_name"`
-				CellAlias string `json:"cell_alias"`
-				CellData  []struct {
-					BookData []struct {
-						BookID      string `json:"book_id"`
-						BookName    string `json:"book_name"`
-						Author      string `json:"author"`
-						Abstract    string `json:"abstract"`
-						Category    string `json:"category"`
-						ThumbURL    string `json:"thumb_url"`
-						ReadCount   string `json:"read_count"`
-						RankScore   string `json:"rank_score"`
-						Score       string `json:"score"`
-						Tags        string `json:"tags"`
-						SerialCount string `json:"serial_count"`
-						Creation    string `json:"creation_status"`
-					} `json:"book_data"`
-				} `json:"cell_data"`
-			} `json:"cell_data"`
+			Title    string    `json:"title"`
+			CellData []tabCell `json:"cell_data"`
 		} `json:"tab_item"`
 	}
 	if err := json.Unmarshal(data, &parsed); err != nil {
@@ -422,76 +436,81 @@ func (c *Client) HomeFeed() ([]FeedSection, error) {
 	}
 
 	// 取「推荐」tab（App 首页默认），退而求其次取第一个有 cell 的 tab
-	var tab *struct {
-		Title    string `json:"title"`
-		CellData []struct {
-			CellName  string `json:"cell_name"`
-			CellAlias string `json:"cell_alias"`
-			CellData  []struct {
-				BookData []struct {
-					BookID      string `json:"book_id"`
-					BookName    string `json:"book_name"`
-					Author      string `json:"author"`
-					Abstract    string `json:"abstract"`
-					Category    string `json:"category"`
-					ThumbURL    string `json:"thumb_url"`
-					ReadCount   string `json:"read_count"`
-					RankScore   string `json:"rank_score"`
-					Score       string `json:"score"`
-					Tags        string `json:"tags"`
-					SerialCount string `json:"serial_count"`
-					Creation    string `json:"creation_status"`
-				} `json:"book_data"`
-			} `json:"cell_data"`
-		} `json:"cell_data"`
-	}
+	tabIdx := -1
 	for i := range parsed.TabItem {
 		if parsed.TabItem[i].Title == "推荐" && len(parsed.TabItem[i].CellData) > 0 {
-			tab = &parsed.TabItem[i]
+			tabIdx = i
 			break
 		}
 	}
-	if tab == nil {
+	if tabIdx < 0 {
 		for i := range parsed.TabItem {
 			if len(parsed.TabItem[i].CellData) > 0 {
-				tab = &parsed.TabItem[i]
+				tabIdx = i
 				break
 			}
 		}
 	}
-	if tab == nil {
+	if tabIdx < 0 {
 		return nil, fmt.Errorf("feed 中无可用 tab")
 	}
 
-	sections := make([]FeedSection, 0, len(tab.CellData))
-	for _, cell := range tab.CellData {
+	cells := parsed.TabItem[tabIdx].CellData
+	sections := make([]FeedSection, 0, len(cells))
+	for ci := range cells {
+		cell := &cells[ci]
 		sec := FeedSection{Title: cell.CellName, Subtitle: cell.CellAlias, Books: []FeedBook{}}
-		for _, inner := range cell.CellData {
-			for _, b := range inner.BookData {
-				if b.BookID == "" || b.BookName == "" {
-					continue
+		var walk func(nodes []tabCell)
+		walk = func(nodes []tabCell) {
+			for _, inner := range nodes {
+				for _, b := range inner.BookData {
+					if b.BookID == "" || b.BookName == "" {
+						continue
+					}
+					sec.Books = append(sec.Books, FeedBook{
+						BookID:    b.BookID,
+						BookName:  b.BookName,
+						Author:    b.Author,
+						Abstract:  b.Abstract,
+						Category:  b.Category,
+						ThumbURL:  b.ThumbURL,
+						ReadCount: b.ReadCount,
+						RankScore: b.RankScore,
+						Score:     b.Score,
+						Tags:      b.Tags,
+						SerialNum: b.SerialCount,
+						Finished:  b.Creation == "1",
+					})
 				}
-				sec.Books = append(sec.Books, FeedBook{
-					BookID:    b.BookID,
-					BookName:  b.BookName,
-					Author:    b.Author,
-					Abstract:  b.Abstract,
-					Category:  b.Category,
-					ThumbURL:  b.ThumbURL,
-					ReadCount: b.ReadCount,
-					RankScore: b.RankScore,
-					Score:     b.Score,
-					Tags:      b.Tags,
-					SerialNum: b.SerialCount,
-					Finished:  b.Creation == "1",
-				})
+				walk(inner.CellData)
 			}
 		}
-		if len(sec.Books) > 0 {
+		walk(cell.CellData)
+		// 猜你喜欢个性化瀑布流：挂分页游标（offset 起点 = 首屏内嵌卡片数，含视频卡）
+		if cell.CellID != "" && (cell.AlgoType == 167 || cell.Algo == 167) {
+			sec.CellID = cell.CellID
+			sec.PlanID = cell.PlanID
+			sec.AlgoType = 167
+			sec.NextOffset = countLeafCards(cell.CellData)
+		}
+		if len(sec.Books) > 0 || sec.CellID != "" {
 			sections = append(sections, sec)
 		}
 	}
 	return sections, nil
+}
+
+// countLeafCards 递归统计 cell 子树的叶子卡片数（书卡/视频卡都算），与上游 offset 计数对齐
+func countLeafCards(cells []tabCell) int {
+	n := 0
+	for _, c := range cells {
+		if len(c.CellData) == 0 {
+			n++
+		} else {
+			n += countLeafCards(c.CellData)
+		}
+	}
+	return n
 }
 
 // ─── App 协议榜单（2026-10-03 官方 App 抓包对齐，档案 _reference/fqemu/capture_xiaoshuo_1003）───
@@ -634,6 +653,30 @@ func parseCellViewBooks(data json.RawMessage) ([]FeedBook, error) {
 		return nil, fmt.Errorf("榜单无书籍数据")
 	}
 	return out, nil
+}
+
+// FeedPage 猜你喜欢瀑布流翻页（10/03 抓包实测）：cell/change/v，algo_type=167、tab_type=2、
+// limit=10；offset 由上游 next_offset 驱动，起点 = tab/v 首屏内嵌卡片数（通常 12）。
+// 视频卡（漫剧等）不含 book_data，被过滤后 books 可能少于卡片数，属正常。
+func (c *Client) FeedPage(cellID, planID string, offset int) ([]FeedBook, int, bool, error) {
+	q := fmt.Sprintf("change_type=0&limit=10&cell_id=%s&offset=%d&client_req_type=2&algo_type=167&tab_type=2&plan_id=%s",
+		url.QueryEscape(cellID), offset, url.QueryEscape(planID))
+	data, err := c.fetchApp("/reading/bookapi/bookmall/cell/change/v", q)
+	if err != nil {
+		return nil, 0, false, err
+	}
+	var env struct {
+		HasMore    bool `json:"has_more"`
+		NextOffset int  `json:"next_offset"`
+	}
+	if err := json.Unmarshal(data, &env); err != nil {
+		return nil, 0, false, fmt.Errorf("feed 翻页解析: %w", err)
+	}
+	books, perr := parseCellViewBooks(data)
+	if perr != nil {
+		books = nil // 本页全是视频卡等无书籍内容：合法空页
+	}
+	return books, env.NextOffset, env.HasMore, nil
 }
 
 // ─── 设备风控自动恢复 ────────────────────────────────────────────────

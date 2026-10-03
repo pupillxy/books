@@ -87,6 +87,7 @@ func main() {
 	authed.GET("/store/featured", storeH.FeaturedBoards)           // App 推荐榜卡近似榜单清单
 	authed.GET("/store/featured/:board", storeH.FeaturedBooks)     // recommend/finished/new/peak
 	authed.GET("/store/appfeed", storeH.AppFeed)                  // App 同源书城 feed（unidbg）
+	authed.GET("/store/appfeed/page", storeH.AppFeedPage)         // 猜你喜欢瀑布流翻页
 	authed.GET("/store/search", storeH.Search)                     // 书城搜索（网页端）	authed.GET("/store/library/categories", storeH.LibraryCategories) // 书库分类树
 	authed.GET("/store/library/books", storeH.LibraryBooks)          // 书库筛选列表
 	authed.GET("/store/books/:fanqieID", storeH.BookDetail)

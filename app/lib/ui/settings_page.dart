@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/api.dart';
 import '../core/appearance.dart';
+import '../core/store_pref.dart';
 import '../core/mo_theme.dart';
 import '../core/session.dart';
 import '../models.dart';
@@ -103,6 +104,32 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   }
 
   // ---------- 外观 ----------
+
+  /// 书城频道偏好（男频/女频，持久化；榜单卡与书库分类按此取数）
+  Future<void> _pickGender() async {
+    final current = ref.read(storeGenderProvider);
+    final gender = await showDialog<String>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: const Text('书城频道'),
+        children: [
+          RadioListTile<String>(
+            value: '1',
+            groupValue: current,
+            title: const Text('男频'),
+            onChanged: (v) => Navigator.pop(ctx, v),
+          ),
+          RadioListTile<String>(
+            value: '0',
+            groupValue: current,
+            title: const Text('女频'),
+            onChanged: (v) => Navigator.pop(ctx, v),
+          ),
+        ],
+      ),
+    );
+    if (gender != null) await ref.read(storeGenderProvider.notifier).set(gender);
+  }
 
   /// 全局深浅色模式切换（持久化，立即生效）
   Future<void> _pickAppearance() async {
@@ -290,6 +317,14 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
               },
               cs: cs,
               onTap: _pickAppearance,
+            ),
+            _divider(cs),
+            _MenuTile(
+              icon: Icons.male_rounded,
+              title: '书城频道',
+              subtitle: ref.watch(storeGenderProvider) == '0' ? '女频' : '男频',
+              cs: cs,
+              onTap: _pickGender,
             ),
             _divider(cs),
             _MenuTile(

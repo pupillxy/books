@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/appearance.dart';
+import '../core/store_pref.dart';
 import '../core/session.dart';
 import 'home_page.dart';
 import 'login_page.dart';
@@ -21,6 +22,7 @@ class _AppRootState extends ConsumerState<AppRoot> {
     Future.microtask(() {
       ref.read(sessionProvider.notifier).restore();
       ref.read(appearanceProvider.notifier).restore();
+      ref.read(storeGenderProvider.notifier).restore();
     });
   }
 

@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/api.dart';
 import '../core/mo_theme.dart';
 import '../core/session.dart';
+import '../core/store_pref.dart';
 import '../models.dart';
 import 'store_book_detail_page.dart';
 import 'store_rank_page.dart';
@@ -435,7 +436,8 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
     }
     _boardLoading.add(key);
     setState(() => _boardErrors[key] = null);
-    _api.storeFeaturedBooks(key, limit: 16).then((books) {
+    _api.storeFeaturedBooks(key,
+            gender: ref.read(storeGenderProvider), limit: 16).then((books) {
       if (!mounted) return;
       setState(() {
         _boardBooks[key] = books;

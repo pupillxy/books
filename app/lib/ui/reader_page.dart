@@ -439,6 +439,8 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
 
   void _openToc() async {
     final cs = Theme.of(context).colorScheme;
+    final tocCtl = ScrollController();
+    var tocJumped = false;
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -479,7 +481,22 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
                       return const Center(child: CircularProgressIndicator());
                     }
                     final list = snap.data!;
+                    // 打开目录自动定位到当前章并居中（官方同构）
+                    if (!tocJumped) {
+                      tocJumped = true;
+                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                        if (!tocCtl.hasClients) return;
+                        final cur = list.indexWhere((c) => c.idx == _chapterIdx);
+                        if (cur < 0) return;
+                        final pos = tocCtl.position;
+                        final target = (cur * 48.0 - (pos.viewportDimension - 48) / 2)
+                            .clamp(0.0, pos.maxScrollExtent);
+                        tocCtl.jumpTo(target);
+                      });
+                    }
                     return ListView.builder(
+                      controller: tocCtl,
+                      itemExtent: 48,
                       padding: const EdgeInsets.only(bottom: 24),
                       itemCount: list.length,
                       itemBuilder: (context, i) {
@@ -515,6 +532,7 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
         );
       },
     );
+    tocCtl.dispose();
   }
 
   void _flip(int dir) {

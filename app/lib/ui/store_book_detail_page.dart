@@ -27,6 +27,10 @@ class _StoreBookDetailPageState extends ConsumerState<StoreBookDetailPage> {
   bool _busy = false;
   bool _autoTried = false;
   Timer? _poll;
+  // 章节 tab 自动定位：进页跳到「读到第 X 章」并居中（官方同构）
+  final ScrollController _chListCtl = ScrollController();
+  int? _progressIdx;
+  bool _chJumped = false;
 
   ApiClient get _api => ref.read(sessionProvider).api!;
 
@@ -39,6 +43,7 @@ class _StoreBookDetailPageState extends ConsumerState<StoreBookDetailPage> {
   @override
   void dispose() {
     _poll?.cancel();
+    _chListCtl.dispose();
     super.dispose();
   }
 
@@ -48,10 +53,35 @@ class _StoreBookDetailPageState extends ConsumerState<StoreBookDetailPage> {
       final d = await _api.storeBookDetail(widget.fanqieId);
       if (!mounted) return;
       setState(() => _detail = d);
+      // 已入库的书取阅读进度，章节列表据此定位
+      if (d.bookId > 0) {
+        try {
+          final idx = await _api.progress(d.bookId);
+          if (!mounted) return;
+          setState(() => _progressIdx = idx);
+          _jumpChList();
+        } on ApiException {
+          // 无进度记录：从第 1 章开始
+        }
+      }
     } on ApiException catch (e) {
       if (!mounted) return;
       setState(() => _error = e.message);
     }
+  }
+
+  /// 章节列表就绪后跳到当前进度并居中（一次性）
+  void _jumpChList() {
+    final idx = _progressIdx;
+    if (idx == null || _chJumped || !_chListCtl.hasClients) return;
+    _chJumped = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_chListCtl.hasClients) return;
+      final pos = _chListCtl.position;
+      final target = (idx * 48.0 - (pos.viewportDimension - 48) / 2)
+          .clamp(0.0, pos.maxScrollExtent);
+      _chListCtl.jumpTo(target);
+    });
   }
 
   /// 进页即自动整本下载（仅入库+下载、不加书架；书架由用户手动加入，幂等）。
@@ -297,42 +327,47 @@ class _StoreBookDetailPageState extends ConsumerState<StoreBookDetailPage> {
                         ),
                       ],
                     ),
-                    // 章节：免费章立即可读，其余在整本下载完成后解锁
+                    // 章节：全量目录（进页自动定位到当前阅读进度并居中）
                     d.chapters.isEmpty
                         ? const EmptyView(icon: Icons.list_alt, title: '暂无章节目录')
-                        : ListView.builder(
-                            padding: const EdgeInsets.only(bottom: 24),
-                            itemCount: d.chapters.length + 1,
-                            itemBuilder: (context, i) {
-                              if (i == d.chapters.length) {
-                                return _DownloadFooter(
-                                  ready: fullyDownloaded,
-                                  downloadStatus: d.downloadStatus,
-                                  onRetry: _retryDownload,
-                                  truncated: d.chapterCount > d.chapters.length,
+                        : Builder(builder: (context) {
+                            _jumpChList();
+                            return ListView.builder(
+                              controller: _chListCtl,
+                              itemExtent: 48,
+                              padding: const EdgeInsets.only(bottom: 24),
+                              itemCount: d.chapters.length + 1,
+                              itemBuilder: (context, i) {
+                                if (i == d.chapters.length) {
+                                  return _DownloadFooter(
+                                    ready: fullyDownloaded,
+                                    downloadStatus: d.downloadStatus,
+                                    onRetry: _retryDownload,
+                                    truncated: d.chapterCount > d.chapters.length,
+                                  );
+                                }
+                                final ch = d.chapters[i];
+                                // 全章节在线可读（10/03）：不再按 isFree 上锁
+                                return ListTile(
+                                  dense: true,
+                                  visualDensity: VisualDensity.compact,
+                                  contentPadding:
+                                      const EdgeInsets.symmetric(horizontal: 22),
+                                  title: Text(
+                                    '${ch.index}. ${ch.title}',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                        fontSize: 13.5,
+                                        color: cs.onSurfaceVariant),
+                                  ),
+                                  trailing: Icon(Icons.chevron_right,
+                                      size: 18, color: cs.outline),
+                                  onTap: () => _openReaderAt(ch.index - 1),
                                 );
-                              }
-                              final ch = d.chapters[i];
-                              // 全章节在线可读（10/03）：不再按 isFree 上锁
-                              return ListTile(
-                                dense: true,
-                                visualDensity: VisualDensity.compact,
-                                contentPadding:
-                                    const EdgeInsets.symmetric(horizontal: 22),
-                                title: Text(
-                                  '${ch.index}. ${ch.title}',
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(
-                                      fontSize: 13.5,
-                                      color: cs.onSurfaceVariant),
-                                ),
-                                trailing: Icon(Icons.chevron_right,
-                                    size: 18, color: cs.outline),
-                                onTap: () => _openReaderAt(ch.index - 1),
-                              );
-                            },
-                          ),
+                              },
+                            );
+                          }),
                   ],
                 ),
               ),

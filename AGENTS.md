@@ -148,8 +148,15 @@ app/build/outputs/flutter-apk/  — 构建出的 APK
 
 ## 9. 已知未做 / 想做
 
-- 「猜你喜欢」个性化推荐流（动态 lynx 模板 + 独立分页接口）未接——排行榜已同源
-- 漫画频道（腾讯动漫 ac.qq.com 爬取 + 拷贝漫画）已验证未实现，见对话档案
+- 「猜你喜欢」瀑布流已接通（10/03，纯 cell/change 翻页 `/api/store/appfeed/page`；
+  旧「动态 lynx 模板」方案已弃）
+- 漫画频道已接通（10/04）：书城三频道（推荐/小说/漫画），`/api/store/comicfeed`
+  + `/api/store/comics/:id`（详情+话列表）+ `/api/store/comics/:id/chapters/:itemID`
+  （整话图片，reader/full 宽容解析 + decrypt-content 密文兜底）；协议档案
+  `_reference/fqemu/capture_xiaoshuo_1003|1004/FINDINGS.md`。未做：漫画阅读进度持久化
+- 小说频道筛选瀑布流已接通（10/04，`/api/store/novelfeed`，`selected_items` 逗号多选，
+  值如 finished/online_in_past_one_year/word_num_gt_200w/male/female/bian_ji_tui_jian）。
+  书城卡 `creation_status` 语义 0=完结 1=连载（与详情接口相反，勿再改回）
 - 「付费章」旧结论已推翻（10/03 实测）：网页端只给试读 ≠ 付费章，App 协议匿名设备
   可读（第 63 章实例，`_reference/fqemu/capture_xiaoshuo_1003/FINDINGS.md`）。
   未做：`book.go` 的 402 文案「该章节为会员内容」仍以网页 ErrChapterLocked 判定，误导，

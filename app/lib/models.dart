@@ -627,6 +627,19 @@ class FeedPageResult {
   });
 }
 
+/// 通用分页结果（非 FeedBook 条目，如漫画频道卡）
+class FeedPageResultExt<T> {
+  final List<T> items;
+  final int nextOffset;
+  final bool hasMore;
+
+  const FeedPageResultExt({
+    required this.items,
+    required this.nextOffset,
+    required this.hasMore,
+  });
+}
+
 /// App 推荐流中的一本书
 class FeedBook {
   final String id;
@@ -640,6 +653,7 @@ class FeedBook {
   final String rankScore;
   final String category;
   final String tags;
+  final String wordCount; // 原始字数值（"2595175"），显示时格式化
 
   const FeedBook({
     required this.id,
@@ -653,6 +667,7 @@ class FeedBook {
     this.rankScore = '',
     this.category = '',
     this.tags = '',
+    this.wordCount = '',
   });
 
   factory FeedBook.fromJson(Map<String, dynamic> j) => FeedBook(
@@ -667,5 +682,137 @@ class FeedBook {
         rankScore: (j['rank_score'] ?? '') as String,
         category: (j['category'] ?? '') as String,
         tags: (j['tags'] ?? '') as String,
+        wordCount: (j['word_count'] ?? '') as String,
+      );
+
+  /// 字数展示："2595175" → "259.5万字"；缺失返回空
+  String get wordCountText {
+    final n = int.tryParse(wordCount);
+    if (n == null || n <= 0) return '';
+    if (n >= 10000) {
+      final w = n / 10000;
+      return '${w >= 100 ? w.toStringAsFixed(0) : w.toStringAsFixed(1)}万字';
+    }
+    return '$n字';
+  }
+}
+
+/// 漫画频道卡片（server /api/store/comicfeed）
+class ComicBook {
+  final String id;
+  final String title;
+  final String author;
+  final String synopsis;
+  final String cover;
+  final String category;
+  final String readCount; // 形如 "12.5万人在读"
+  final String updateTag; // 形如 "周更"
+  final String wordCount; // 复用字段装 "322话"
+  final String score;
+  final bool finished;
+
+  const ComicBook({
+    required this.id,
+    required this.title,
+    required this.author,
+    required this.cover,
+    this.synopsis = '',
+    this.category = '',
+    this.readCount = '',
+    this.updateTag = '',
+    this.wordCount = '',
+    this.score = '',
+    this.finished = false,
+  });
+
+  factory ComicBook.fromJson(Map<String, dynamic> j) => ComicBook(
+        id: (j['id'] ?? '') as String,
+        title: (j['title'] ?? '') as String,
+        author: (j['author'] ?? '') as String,
+        cover: (j['cover'] ?? '') as String,
+        synopsis: (j['synopsis'] ?? '') as String,
+        category: (j['category'] ?? '') as String,
+        readCount: (j['read_count'] ?? '') as String,
+        updateTag: (j['update_tag'] ?? '') as String,
+        wordCount: (j['word_count'] ?? '') as String,
+        score: (j['score'] ?? '') as String,
+        finished: (j['finished'] ?? false) as bool,
+      );
+}
+
+/// 漫画详情（server /api/store/comics/:bookID）
+class ComicDetailData {
+  final String id;
+  final String title;
+  final String author;
+  final String cover;
+  final String synopsis;
+  final String category;
+  final String tags;
+  final String score;
+  final String readCount;
+  final String updateTag;
+  final bool finished;
+  final List<StoreChapter> chapters;
+
+  const ComicDetailData({
+    required this.id,
+    required this.title,
+    required this.author,
+    required this.cover,
+    required this.synopsis,
+    required this.chapters,
+    this.category = '',
+    this.tags = '',
+    this.score = '',
+    this.readCount = '',
+    this.updateTag = '',
+    this.finished = false,
+  });
+
+  factory ComicDetailData.fromJson(Map<String, dynamic> j) => ComicDetailData(
+        id: (j['id'] ?? '') as String,
+        title: (j['title'] ?? '') as String,
+        author: (j['author'] ?? '') as String,
+        cover: (j['cover'] ?? '') as String,
+        synopsis: (j['synopsis'] ?? '') as String,
+        category: (j['category'] ?? '') as String,
+        tags: (j['tags'] ?? '') as String,
+        score: (j['score'] ?? '') as String,
+        readCount: (j['read_count'] ?? '') as String,
+        updateTag: (j['update_tag'] ?? '') as String,
+        finished: (j['finished'] ?? false) as bool,
+        chapters: ((j['chapters'] as List?) ?? const [])
+            .map((e) => StoreChapter.fromJson(e as Map<String, dynamic>))
+            .toList(),
+      );
+}
+
+/// 漫画单话内容（server /api/store/comics/:bookID/chapters/:itemID）
+class ComicChapterContent {
+  final List<ComicImage> images;
+
+  const ComicChapterContent({required this.images});
+
+  factory ComicChapterContent.fromJson(Map<String, dynamic> j) =>
+      ComicChapterContent(
+        images: ((j['images'] as List?) ?? const [])
+            .map((e) => ComicImage.fromJson(e as Map<String, dynamic>))
+            .toList(),
+      );
+}
+
+/// 漫画页图片（CDN 签名直链，客户端直连加载）
+class ComicImage {
+  final String url;
+  final int width;
+  final int height;
+
+  const ComicImage({required this.url, this.width = 0, this.height = 0});
+
+  factory ComicImage.fromJson(Map<String, dynamic> j) => ComicImage(
+        url: (j['url'] ?? '') as String,
+        width: (j['width'] as num?)?.toInt() ?? 0,
+        height: (j['height'] as num?)?.toInt() ?? 0,
       );
 }

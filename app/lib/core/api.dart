@@ -255,6 +255,48 @@ class ApiClient {
     );
   }
 
+  /// 小说频道筛选瀑布流（官方 cell/change 协议；filters 为官方筛选值逗号串，
+  /// 如 finished,online_in_past_one_year / 空串=不筛选）
+  Future<FeedPageResult> storeNovelFeed({
+    String filters = '',
+    required int offset,
+  }) async {
+    final j = await _get<Map<String, dynamic>>('/api/store/novelfeed',
+        query: {'filters': filters, 'offset': '$offset'});
+    return FeedPageResult(
+      books: ((j['items'] as List?) ?? const [])
+          .map((e) => FeedBook.fromJson(e as Map<String, dynamic>))
+          .toList(),
+      nextOffset: (j['next_offset'] as num?)?.toInt() ?? offset,
+      hasMore: (j['has_more'] ?? false) as bool,
+    );
+  }
+
+  /// 漫画频道瀑布流
+  Future<FeedPageResultExt<ComicBook>> storeComicFeed({required int offset}) async {
+    final j = await _get<Map<String, dynamic>>('/api/store/comicfeed',
+        query: {'offset': '$offset'});
+    return FeedPageResultExt(
+      items: ((j['items'] as List?) ?? const [])
+          .map((e) => ComicBook.fromJson(e as Map<String, dynamic>))
+          .toList(),
+      nextOffset: (j['next_offset'] as num?)?.toInt() ?? offset,
+      hasMore: (j['has_more'] ?? false) as bool,
+    );
+  }
+
+  /// 漫画详情 + 全量话列表
+  Future<ComicDetailData> storeComicDetail(String bookId) async {
+    final j = await _get<Map<String, dynamic>>('/api/store/comics/$bookId');
+    return ComicDetailData.fromJson(j);
+  }
+
+  /// 漫画单话图片列表
+  Future<ComicChapterContent> storeComicChapter(String bookId, String itemId) async {
+    final j = await _get<Map<String, dynamic>>('/api/store/comics/$bookId/chapters/$itemId');
+    return ComicChapterContent.fromJson(j);
+  }
+
   /// 书库分类树（gender: '1'=男生 '0'=女生，分组 label: 主分类/主题/角色/情节）
   Future<List<LibCategory>> storeLibraryCategories(String gender) async {
     final j = await _get<Map<String, dynamic>>('/api/store/library/categories',

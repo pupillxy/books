@@ -379,18 +379,19 @@ const bookmallBusinessQuery = `unlimited_short_series_change_type=0&last_search_
 
 // FeedBook App 推荐流中的一本书
 type FeedBook struct {
-	BookID    string `json:"book_id"`
-	BookName  string `json:"book_name"`
-	Author    string `json:"author"`
-	Abstract  string `json:"abstract"`
-	Category  string `json:"category"`
-	ThumbURL  string `json:"thumb_url"`
-	ReadCount string `json:"read_count"` // read_cnt_text，形如 "3292人在读"
-	RankScore string `json:"rank_score"` // 形如 "9243万热度"
-	Score     string `json:"score"`
-	Tags      string `json:"tags"`
-	SerialNum string `json:"serial_count"`
-	Finished  bool   `json:"finished"`
+	BookID     string `json:"book_id"`
+	BookName   string `json:"book_name"`
+	Author     string `json:"author"`
+	Abstract   string `json:"abstract"`
+	Category   string `json:"category"`
+	ThumbURL   string `json:"thumb_url"`
+	ReadCount  string `json:"read_count"`  // read_cnt_text，形如 "3292人在读"
+	RankScore  string `json:"rank_score"` // 形如 "9243万热度"
+	Score      string `json:"score"`
+	Tags       string `json:"tags"`
+	SerialNum  string `json:"serial_count"`
+	WordNumber string `json:"word_number,omitempty"` // 原始字数值（书城卡数据），App 自行格式化
+	Finished   bool   `json:"finished"`
 }
 
 // FeedSection App 书城 feed 的一个模块（「排行榜」「猜你喜欢」等）
@@ -495,7 +496,8 @@ func (c *Client) HomeFeed() ([]FeedSection, error) {
 						Score:     b.Score,
 						Tags:      b.Tags,
 						SerialNum: b.SerialCount,
-						Finished:  b.Creation == "1",
+						// 书城卡 creation_status：0=完结 1=连载（与详情接口语义相反，10/04 定案）
+						Finished: b.Creation == "0",
 					})
 				}
 				walk(inner.CellData)
@@ -624,6 +626,8 @@ type mallBook struct {
 	Score       string `json:"score"`
 	Tags        string `json:"tags"`
 	SerialCount string `json:"serial_count"`
+	UpdateTag   *string `json:"update_tag"`
+	WordNumber  flexInt `json:"word_number"`
 	Creation    string `json:"creation_status"`
 }
 
@@ -632,39 +636,50 @@ func (m mallBook) toFeedBook() FeedBook {
 	if rc == "" {
 		rc = m.ReadCount
 	}
+	// 书城卡 creation_status 语义与详情接口相反：0=完结 1=连载。
+	// 10/04 定案：selected_items=finished 筛选返回 12 本全为 0，完本榜 30 本全 0，
+	// 连载中的漫画（周更）为 1。
 	return FeedBook{
 		BookID: m.BookID, BookName: m.BookName, Author: m.Author,
 		Abstract: m.Abstract, Category: m.Category, ThumbURL: m.ThumbURL,
 		ReadCount: rc, RankScore: m.RankScore, Score: m.Score, Tags: m.Tags,
-		SerialNum: m.SerialCount, Finished: m.Creation == "1",
+		SerialNum: m.SerialCount, WordNumber: wordNumberStr(int(m.WordNumber)),
+		Finished: m.Creation == "0",
 	}
 }
 
-// parseCellViewBooks 展开 cell/change 响应 data.cell_view.cell_data（含嵌套）里的全部书籍。
-// 入参为 /api/fqapp/fetch 剥壳后的 data 对象（内含 cell_view，不再有 data 包裹层）。
+// wordNumberStr 字数值转字符串；0 视为缺失返回空
+func wordNumberStr(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return strconv.Itoa(n)
+}
+
+// parseCellViewBooks 展开 cell/change 响应 data.cell_view 里的全部书籍。
+// 入参为 /api/fqapp/fetch 剥壳后的 data 对象。book_data 可能挂在 cell_view 自己身上
+// （漫画频道实测）也可能嵌在 cell_data 子树里（小说频道/榜单实测），从 cell_view
+// 节点本身开始递归两种形状通吃。
 func parseCellViewBooks(data json.RawMessage) ([]FeedBook, error) {
 	var env struct {
-		CellView struct {
-			CellName string     `json:"cell_name"`
-			CellData []mallCell `json:"cell_data"`
-		} `json:"cell_view"`
+		CellView mallCell `json:"cell_view"`
 	}
 	if err := json.Unmarshal(data, &env); err != nil {
 		return nil, fmt.Errorf("榜单结构解析: %w", err)
 	}
 	var out []FeedBook
-	var walk func(cells []mallCell)
-	walk = func(cells []mallCell) {
-		for _, c := range cells {
-			for _, b := range c.BookData {
-				if b.BookID != "" && b.BookName != "" {
-					out = append(out, b.toFeedBook())
-				}
+	var walk func(cells mallCell)
+	walk = func(c mallCell) {
+		for _, b := range c.BookData {
+			if b.BookID != "" && b.BookName != "" {
+				out = append(out, b.toFeedBook())
 			}
-			walk(c.CellData)
+		}
+		for _, inner := range c.CellData {
+			walk(inner)
 		}
 	}
-	walk(env.CellView.CellData)
+	walk(env.CellView)
 	if len(out) == 0 {
 		return nil, fmt.Errorf("榜单无书籍数据")
 	}
@@ -696,6 +711,325 @@ func (c *Client) FeedPage(cellID, planID string, offset int) ([]FeedBook, int, b
 		books = nil // 本页全是视频卡等无书籍内容：合法空页
 	}
 	return books, env.NextOffset, env.HasMore, nil
+}
+
+// DefaultComicFeedCellID 漫画频道 feed cell 的服务端内容 ID（tab_type=9，10/04 实测跨设备稳定）
+const DefaultComicFeedCellID = "7023314149891375141"
+
+// NovelFeedPage 小说频道瀑布流（10/04 实测：cell/change/v，tab_type=25、algo_type=167，
+// 与猜你喜欢同 cell 家族）。selected 非空时携带官方筛选（逗号多选，值如
+// finished/online_in_past_one_year/word_num_gt_200w/male/female/bian_ji_tui_jian）。
+// 返回 (书籍, next_offset, has_more)。
+func (c *Client) NovelFeedPage(selected string, offset int) ([]FeedBook, int, bool, error) {
+	q := fmt.Sprintf("change_type=0&limit=0&cell_id=%s&offset=%d&client_req_type=2&algo_type=167&tab_type=25&plan_id=0",
+		url.QueryEscape(DefaultFeedCellID), offset)
+	if selected != "" {
+		q += "&selected_items=" + url.QueryEscape(selected) + "&unlimited_selector_change_type=2"
+	}
+	data, err := c.fetchApp("/reading/bookapi/bookmall/cell/change/v", q)
+	if err != nil {
+		return nil, 0, false, err
+	}
+	return parseCellFeedPage(data)
+}
+
+// parseCellFeedPage 解析 cell/change 翻页响应：游标 + 展开全部书卡
+func parseCellFeedPage(data json.RawMessage) ([]FeedBook, int, bool, error) {
+	var env struct {
+		HasMore    bool `json:"has_more"`
+		NextOffset int  `json:"next_offset"`
+	}
+	if err := json.Unmarshal(data, &env); err != nil {
+		return nil, 0, false, fmt.Errorf("cell feed 解析: %w", err)
+	}
+	books, perr := parseCellViewBooks(data)
+	if perr != nil {
+		books = nil // 本页全是视频卡等无书籍内容：合法空页
+	}
+	return books, env.NextOffset, env.HasMore, nil
+}
+
+// ComicCard 漫画频道瀑布流卡片
+type ComicCard struct {
+	BookID      string `json:"book_id"`
+	BookName    string `json:"book_name"`
+	Author      string `json:"author"`
+	Abstract    string `json:"abstract"`
+	Category    string `json:"category"`
+	ThumbURL    string `json:"thumb_url"`
+	ReadCntText string `json:"read_cnt_text"` // 形如 "12.5万人在读"
+	UpdateTag   string `json:"update_tag"`    // 形如 "周更"、"日更"
+	SerialCount string `json:"serial_count"`  // 总话数
+	Score       string `json:"score"`
+	Tags        string `json:"tags"`
+	Finished    bool   `json:"finished"`
+}
+
+// ComicFeedPage 漫画频道瀑布流（10/04 实测：cell/change/v，tab_type=9，不带 algo_type，
+// limit=20）。返回 (漫画卡, next_offset, has_more)。
+func (c *Client) ComicFeedPage(offset int) ([]ComicCard, int, bool, error) {
+	q := fmt.Sprintf("change_type=0&limit=20&cell_id=%s&offset=%d&client_req_type=2&tab_type=9&plan_id=0",
+		url.QueryEscape(DefaultComicFeedCellID), offset)
+	data, err := c.fetchApp("/reading/bookapi/bookmall/cell/change/v", q)
+	if err != nil {
+		return nil, 0, false, err
+	}
+	var env struct {
+		HasMore    bool `json:"has_more"`
+		NextOffset int  `json:"next_offset"`
+	}
+	if err := json.Unmarshal(data, &env); err != nil {
+		return nil, 0, false, fmt.Errorf("comic feed 解析: %w", err)
+	}
+	cards := parseComicCards(data)
+	return cards, env.NextOffset, env.HasMore, nil
+}
+
+// parseComicCards 展开 cell/change 响应里的漫画卡（book_data 可能挂在 cell_view
+// 本身或嵌套 cell_data 里，两种形状通吃）
+func parseComicCards(data json.RawMessage) []ComicCard {
+	var env struct {
+		CellView mallCell `json:"cell_view"`
+	}
+	if err := json.Unmarshal(data, &env); err != nil {
+		return nil
+	}
+	var out []ComicCard
+	var walk func(c mallCell)
+	walk = func(c mallCell) {
+		for _, b := range c.BookData {
+			if b.BookID == "" || b.BookName == "" {
+				continue
+			}
+			out = append(out, ComicCard{
+				BookID: b.BookID, BookName: b.BookName, Author: b.Author,
+				Abstract: b.Abstract, Category: b.Category, ThumbURL: b.ThumbURL,
+				ReadCntText: firstNonEmpty(b.ReadCntText, b.ReadCount),
+				UpdateTag:   derefOrEmpty(b.UpdateTag), SerialCount: b.SerialCount,
+				Score: b.Score, Tags: b.Tags,
+				Finished: b.Creation == "0",
+			})
+		}
+		for _, inner := range c.CellData {
+			walk(inner)
+		}
+	}
+	walk(env.CellView)
+	return out
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func derefOrEmpty(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+// ComicDetailInfo 漫画详情（comic_tab/comic_detail/v 的 comic_data，10/04 实测）
+type ComicDetailInfo struct {
+	BookID      string
+	BookName    string
+	Author      string
+	Abstract    string
+	Category    string
+	Tags        string
+	ThumbURL    string
+	ReadCntText string
+	UpdateTag   string
+	SerialCount string
+	Score       string
+	Finished    bool
+}
+
+// ComicDetail 拉取漫画详情（点击漫画卡进详情页用）
+func (c *Client) ComicDetail(bookID string) (*ComicDetailInfo, error) {
+	data, err := c.fetchApp("/reading/bookapi/comic_tab/comic_detail/v", "book_id="+url.QueryEscape(bookID))
+	if err != nil {
+		return nil, err
+	}
+	var env struct {
+		ComicData struct {
+			BookID      string  `json:"book_id"`
+			BookName    string  `json:"book_name"`
+			Author      string  `json:"author"`
+			Abstract    string  `json:"abstract"`
+			Category    string  `json:"category"`
+			Tags        string  `json:"tags"`
+			ThumbURL    string  `json:"thumb_url"`
+			ReadCntText string  `json:"read_cnt_text"`
+			ReadCount   string  `json:"read_count"`
+			UpdateTag   *string `json:"update_tag"`
+			SerialCount string  `json:"serial_count"`
+			Score       *string `json:"score"`
+			Creation    string  `json:"creation_status"`
+		} `json:"comic_data"`
+	}
+	if err := json.Unmarshal(data, &env); err != nil {
+		return nil, fmt.Errorf("漫画详情解析: %w", err)
+	}
+	cd := env.ComicData
+	if cd.BookID == "" || cd.BookName == "" {
+		return nil, fmt.Errorf("漫画详情为空")
+	}
+	info := &ComicDetailInfo{
+		BookID: cd.BookID, BookName: cd.BookName, Author: cd.Author,
+		Abstract: cd.Abstract, Category: cd.Category, Tags: cd.Tags,
+		ThumbURL: cd.ThumbURL, ReadCntText: firstNonEmpty(cd.ReadCntText, cd.ReadCount),
+		SerialCount: cd.SerialCount, Finished: cd.Creation == "0",
+	}
+	if cd.UpdateTag != nil {
+		info.UpdateTag = *cd.UpdateTag
+	}
+	if cd.Score != nil {
+		info.Score = *cd.Score
+	}
+	return info, nil
+}
+
+// ComicDirectory 漫画话列表（directory/all_items/v，与小说目录同端点同形状）
+func (c *Client) ComicDirectory(bookID string) ([]ChapterMeta, error) {
+	data, err := c.fetchApp("/reading/bookapi/directory/all_items/v", "book_id="+url.QueryEscape(bookID))
+	if err != nil {
+		return nil, err
+	}
+	var env struct {
+		ItemDataList []directoryChapter `json:"item_data_list"`
+	}
+	if err := json.Unmarshal(data, &env); err != nil {
+		return nil, fmt.Errorf("漫画目录解析: %w", err)
+	}
+	metas := make([]ChapterMeta, 0, len(env.ItemDataList))
+	for _, ch := range env.ItemDataList {
+		metas = append(metas, ChapterMeta{ItemID: ch.ItemID, Index: int(ch.ChapterIndex) - 1, Title: ch.Title})
+	}
+	return metas, nil
+}
+
+// ComicImage 单话内的一张漫画图（CDN 无签名直链，客户端直接加载）
+type ComicImage struct {
+	URL    string `json:"url"`
+	Width  int    `json:"width,omitempty"`
+	Height int    `json:"height,omitempty"`
+}
+
+// ComicChapterImages 拉取漫画单话的整话图片列表（reader/full/v，参数与小说正文同形；
+// 10/03 实测整话图片一次下发）。上游若返回密文则走 unidbg decrypt-content 解密后再解析。
+func (c *Client) ComicChapterImages(bookID, itemID string) ([]ComicImage, error) {
+	data, err := c.fetchApp("/reading/reader/full/v",
+		"book_id="+url.QueryEscape(bookID)+"&item_id="+url.QueryEscape(itemID))
+	if err != nil {
+		return nil, err
+	}
+	imgs := extractComicImages(data)
+	if len(imgs) == 0 {
+		// 图片字段没找到且存在 content 密文 → 解密后重试（extractTextFromHtml 对无
+		// <blk> 标签的内容原样返回，JSON 可存活）
+		if enc := encryptedContentBlob(data); enc != "" {
+			plain, derr := c.decryptExternalContent(enc)
+			if derr != nil {
+				return nil, fmt.Errorf("漫画内容解密: %w", derr)
+			}
+			imgs = extractComicImages(json.RawMessage(plain))
+		}
+	}
+	if len(imgs) == 0 {
+		return nil, fmt.Errorf("漫画内容无图片数据")
+	}
+	return imgs, nil
+}
+
+// decryptExternalContent 调 unidbg /api/fqnovel/decrypt-content（密钥由服务端按需 registerkey）
+func (c *Client) decryptExternalContent(content string) (string, error) {
+	var out struct {
+		Code       int    `json:"code"`
+		TxtContent string `json:"txtContent"`
+	}
+	if err := c.postJSON("/api/fqnovel/decrypt-content", map[string]any{"content": content}, &out); err != nil {
+		return "", err
+	}
+	if out.Code != 0 || out.TxtContent == "" {
+		return "", fmt.Errorf("解密返回空")
+	}
+	return out.TxtContent, nil
+}
+
+// encryptedContentBlob 找 reader 响应里的密文字段（data.content，长 base64 无 http 字样）
+func encryptedContentBlob(data json.RawMessage) string {
+	var env struct {
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal(data, &env); err != nil {
+		return ""
+	}
+	if len(env.Content) > 100 && !strings.Contains(env.Content, "http") {
+		return env.Content
+	}
+	return ""
+}
+
+// extractComicImages 在响应里宽容地找整话图片列表：取文档序中「元素为含 uri/url
+// 字段的对象」的最长列表（话内图片数远大于其他候选），顺序保持上游下发序。
+func extractComicImages(data json.RawMessage) []ComicImage {
+	var root any
+	if err := json.Unmarshal(data, &root); err != nil {
+		return nil
+	}
+	var best []ComicImage
+	var walk func(node any)
+	walk = func(node any) {
+		switch v := node.(type) {
+		case []any:
+			if imgs := imageList(v); len(imgs) > len(best) {
+				best = imgs
+			}
+			for _, e := range v {
+				walk(e)
+			}
+		case map[string]any:
+			for _, e := range v {
+				walk(e)
+			}
+		}
+	}
+	walk(root)
+	return best
+}
+
+// imageList 列表元素含 http 开头的 uri/url 字段才算图片列表
+func imageList(list []any) []ComicImage {
+	if len(list) == 0 {
+		return nil
+	}
+	imgs := make([]ComicImage, 0, len(list))
+	for _, e := range list {
+		m, ok := e.(map[string]any)
+		if !ok {
+			return nil // 混合类型列表不算
+		}
+		u := ""
+		for _, k := range []string{"uri", "url"} {
+			if s, ok := m[k].(string); ok && strings.HasPrefix(s, "http") {
+				u = s
+				break
+			}
+		}
+		if u == "" {
+			return nil
+		}
+		w, _ := m["width"].(float64)
+		h, _ := m["height"].(float64)
+		imgs = append(imgs, ComicImage{URL: u, Width: int(w), Height: int(h)})
+	}
+	return imgs
 }
 
 // ─── 设备风控自动恢复 ────────────────────────────────────────────────

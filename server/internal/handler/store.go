@@ -1,9 +1,11 @@
 package handler
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -41,6 +43,16 @@ type StoreHandler struct {
 	// 成功缓存 10 分钟、失败负缓存 60 秒（负缓存期内的重试直接返回失败，不打上游）。
 	feedMu   sync.Mutex
 	feedCache *storeFeedCacheEntry
+
+	// 小说/漫画频道瀑布流缓存：key 含筛选与 offset，App 滚动/切筛选高频请求
+	// 在 TTL 内复用同一回放（cellFeedCached 内自带锁竞争面小，map 读写都在
+	// handler goroutine，与 feedCache 不同——这里也加锁保持一致）。
+	cellFeedMu   sync.Mutex
+	cellFeedCache map[string]cellFeedCacheEntry
+
+	// 漫画详情+话列表缓存
+	comicDetMu    sync.Mutex
+	comicDetCache map[string]comicDetCacheEntry
 }
 
 const rankBatchTTL = 2 * time.Minute
@@ -735,6 +747,7 @@ type storeFeedBook struct {
 	RankScore string `json:"rank_score,omitempty"`
 	Category  string `json:"category,omitempty"`
 	Tags      string `json:"tags,omitempty"`
+	WordCount string `json:"word_count,omitempty"`
 }
 
 // storeFeedSection App feed 分区输出（猜你喜欢分区带分页游标）
@@ -841,6 +854,281 @@ func (h *StoreHandler) AppFeedPage(c *gin.Context) {
 		"next_offset": nextOffset,
 		"has_more":    hasMore,
 	})
+}
+
+// ─── 小说/漫画频道（bookmall cell/change，10/04 协议定案）────────────
+
+// cellFeedCacheEntry 小说/漫画瀑布流缓存条目（err 非空 = 负缓存）。
+// App 连续滚动/切筛选会高频打上游，TTL 内同一 (筛选, offset) 只回放一次。
+type cellFeedCacheEntry struct {
+	items      any
+	nextOffset int
+	hasMore    bool
+	err        string
+	at         time.Time
+}
+
+const (
+	cellFeedCacheTTL    = 3 * time.Minute
+	cellFeedNegCacheTTL = 60 * time.Second
+)
+
+// novelFilterCharset 筛选 token 白名单字符集（官方值为小写拼音/下划线风格）；
+// 未知 token 直接丢弃，避免垃圾参数打到上游
+var novelFilterRe = regexp.MustCompile(`^[a-z0-9_]{2,40}$`)
+
+// cellFeedCached 通用取缓存/回放（自带锁）。fetch 返回 (条目, next_offset, has_more, error)。
+func (h *StoreHandler) cellFeedCached(key string, fetch func() ([]any, int, bool, error)) (items []any, nextOffset int, hasMore bool, err error) {
+	h.cellFeedMu.Lock()
+	if h.cellFeedCache == nil {
+		h.cellFeedCache = map[string]cellFeedCacheEntry{}
+	}
+	if ent, ok := h.cellFeedCache[key]; ok {
+		ttl := cellFeedCacheTTL
+		if ent.err != "" {
+			ttl = cellFeedNegCacheTTL
+		}
+		if time.Since(ent.at) < ttl {
+			h.cellFeedMu.Unlock()
+			if ent.err != "" {
+				return nil, 0, false, errors.New(ent.err)
+			}
+			list, _ := ent.items.([]any)
+			return list, ent.nextOffset, ent.hasMore, nil
+		}
+	}
+	h.cellFeedMu.Unlock()
+
+	raws, next, more, ferr := fetch()
+	h.cellFeedMu.Lock()
+	h.cellFeedCache[key] = cellFeedCacheEntry{
+		items: raws, nextOffset: next, hasMore: more,
+		err: func() string {
+			if ferr != nil {
+				return ferr.Error()
+			}
+			return ""
+		}(), at: time.Now(),
+	}
+	h.cellFeedMu.Unlock()
+	if ferr != nil {
+		return nil, 0, false, ferr
+	}
+	return raws, next, more, nil
+}
+
+// NovelFeed 小说频道筛选瀑布流：GET /api/store/novelfeed?filters=finished,male&offset=0
+// 官方协议：cell/change/v tab_type=25 + selected_items（10/04 定案，值见
+// _reference/fqemu/capture_xiaoshuo_1004/FINDINGS.md）
+func (h *StoreHandler) NovelFeed(c *gin.Context) {
+	if !h.UNI.Enabled() {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "unidbg 服务未配置（XS_UNIDBG_URL）"})
+		return
+	}
+	// 筛选 token 清洗：仅放行官方值字符集，去重，最多 6 个
+	var selected []string
+	seen := map[string]bool{}
+	for _, tok := range strings.Split(c.Query("filters"), ",") {
+		tok = strings.TrimSpace(tok)
+		if tok == "" || !novelFilterRe.MatchString(tok) || seen[tok] {
+			continue
+		}
+		seen[tok] = true
+		selected = append(selected, tok)
+		if len(selected) >= 6 {
+			break
+		}
+	}
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	if offset < 0 {
+		offset = 0
+	}
+	sel := strings.Join(selected, ",")
+	key := "novel:" + sel + "|" + strconv.Itoa(offset)
+	items, nextOffset, hasMore, err := h.cellFeedCached(key, func() ([]any, int, bool, error) {
+		books, next, more, ferr := h.UNI.NovelFeedPage(sel, offset)
+		if ferr != nil {
+			return nil, 0, false, ferr
+		}
+		out := make([]any, 0, len(books))
+		for _, b := range books {
+			out = append(out, feedBookOut(b))
+		}
+		return out, next, more, nil
+	})
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "获取小说频道失败: " + err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items, "next_offset": nextOffset, "has_more": hasMore})
+}
+
+// feedBookOut unidbg.FeedBook → storeFeedBook（含字数）
+func feedBookOut(b unidbg.FeedBook) storeFeedBook {
+	return storeFeedBook{
+		ID: b.BookID, Title: b.BookName, Author: b.Author,
+		Synopsis: b.Abstract, Cover: b.ThumbURL, Finished: b.Finished,
+		ReadCount: b.ReadCount, Score: b.Score, RankScore: b.RankScore,
+		Category: b.Category, Tags: b.Tags, WordCount: b.WordNumber,
+	}
+}
+
+// storeComicBook 漫画频道卡输出
+type storeComicBook struct {
+	ID         string `json:"id"`
+	Title      string `json:"title"`
+	Author     string `json:"author"`
+	Synopsis   string `json:"synopsis,omitempty"`
+	Cover      string `json:"cover"`
+	Category   string `json:"category,omitempty"`
+	ReadCount  string `json:"read_count,omitempty"` // 形如 "12.5万人在读"
+	UpdateTag  string `json:"update_tag,omitempty"` // 形如 "周更"
+	WordCount  string `json:"word_count,omitempty"` // 复用字段装总话数（"322话"）
+	Score      string `json:"score,omitempty"`
+	Tags       string `json:"tags,omitempty"`
+	Finished   bool   `json:"finished"`
+}
+
+// ComicFeed 漫画频道瀑布流：GET /api/store/comicfeed?offset=0
+func (h *StoreHandler) ComicFeed(c *gin.Context) {
+	if !h.UNI.Enabled() {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "unidbg 服务未配置（XS_UNIDBG_URL）"})
+		return
+	}
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	if offset < 0 {
+		offset = 0
+	}
+	key := "comic|" + strconv.Itoa(offset)
+	items, nextOffset, hasMore, err := h.cellFeedCached(key, func() ([]any, int, bool, error) {
+		cards, next, more, ferr := h.UNI.ComicFeedPage(offset)
+		if ferr != nil {
+			return nil, 0, false, ferr
+		}
+		out := make([]any, 0, len(cards))
+		for _, b := range cards {
+			out = append(out, storeComicBook{
+				ID: b.BookID, Title: b.BookName, Author: b.Author,
+				Synopsis: b.Abstract, Cover: b.ThumbURL, Category: b.Category,
+				ReadCount: b.ReadCntText, UpdateTag: b.UpdateTag,
+				WordCount: func() string {
+					if b.SerialCount == "" {
+						return ""
+					}
+					return b.SerialCount + "话"
+				}(), Score: b.Score, Tags: b.Tags, Finished: b.Finished,
+			})
+		}
+		return out, next, more, nil
+	})
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "获取漫画频道失败: " + err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items, "next_offset": nextOffset, "has_more": hasMore})
+}
+
+// comicDetCacheEntry 漫画详情+话列表缓存（同 cachedFanqieDetail 的 TTL 策略）
+type comicDetCacheEntry struct {
+	info     *unidbg.ComicDetailInfo
+	chapters []fanqie.ChapterInfo
+	at       time.Time
+	err      error
+}
+
+// ComicDetail 漫画详情 + 全量话列表：GET /api/store/comics/:bookID
+func (h *StoreHandler) ComicDetail(c *gin.Context) {
+	if !h.UNI.Enabled() {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "unidbg 服务未配置（XS_UNIDBG_URL）"})
+		return
+	}
+	bookID := c.Param("bookID")
+	if !fanqie.ValidateBookID(bookID) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "漫画 ID 无效"})
+		return
+	}
+	h.comicDetMu.Lock()
+	if h.comicDetCache == nil {
+		h.comicDetCache = map[string]comicDetCacheEntry{}
+	}
+	ent, ok := h.comicDetCache[bookID]
+	h.comicDetMu.Unlock()
+	if ok {
+		if ent.err != nil && time.Since(ent.at) <= storeDetailFailTTL {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "获取漫画详情失败: " + ent.err.Error()})
+			return
+		}
+		if ent.err == nil && time.Since(ent.at) <= storeDetailCacheTTL {
+			emitComicDetail(c, bookID, ent.info, ent.chapters)
+			return
+		}
+	}
+	info, err := h.UNI.ComicDetail(bookID)
+	if err != nil {
+		h.comicDetMu.Lock()
+		h.comicDetCache[bookID] = comicDetCacheEntry{at: time.Now(), err: err}
+		h.comicDetMu.Unlock()
+		c.JSON(http.StatusBadGateway, gin.H{"error": "获取漫画详情失败: " + err.Error()})
+		return
+	}
+	metas, err := h.UNI.ComicDirectory(bookID)
+	if err != nil {
+		h.comicDetMu.Lock()
+		h.comicDetCache[bookID] = comicDetCacheEntry{at: time.Now(), err: err}
+		h.comicDetMu.Unlock()
+		c.JSON(http.StatusBadGateway, gin.H{"error": "获取话列表失败: " + err.Error()})
+		return
+	}
+	chapters := make([]fanqie.ChapterInfo, 0, len(metas))
+	for i, m := range metas {
+		idx := m.Index
+		if idx < 0 {
+			idx = i
+		}
+		chapters = append(chapters, fanqie.ChapterInfo{ID: m.ItemID, Index: idx + 1, Title: m.Title, IsFree: true})
+	}
+	h.comicDetMu.Lock()
+	h.comicDetCache[bookID] = comicDetCacheEntry{info: info, chapters: chapters, at: time.Now()}
+	h.comicDetMu.Unlock()
+	emitComicDetail(c, bookID, info, chapters)
+}
+
+func emitComicDetail(c *gin.Context, bookID string, info *unidbg.ComicDetailInfo, chapters []fanqie.ChapterInfo) {
+	c.JSON(http.StatusOK, gin.H{
+		"id":        bookID,
+		"title":     info.BookName,
+		"author":    info.Author,
+		"cover":     info.ThumbURL,
+		"synopsis":  info.Abstract,
+		"category":  info.Category,
+		"tags":      info.Tags,
+		"score":     info.Score,
+		"read_count": info.ReadCntText,
+		"update_tag": info.UpdateTag,
+		"finished":  info.Finished,
+		"chapters":  chapters,
+	})
+}
+
+// ComicChapter 漫画单话图片列表：GET /api/store/comics/:bookID/chapters/:itemID
+// 整话图片 URL 一次下发（CDN 签名直链，客户端直连），无需落库缓存。
+func (h *StoreHandler) ComicChapter(c *gin.Context) {
+	if !h.UNI.Enabled() {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "unidbg 服务未配置（XS_UNIDBG_URL）"})
+		return
+	}
+	bookID := c.Param("bookID")
+	itemID := c.Param("itemID")
+	if !fanqie.ValidateBookID(bookID) || !fanqie.ValidateBookID(itemID) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ID 无效"})
+		return
+	}
+	imgs, err := h.UNI.ComicChapterImages(bookID, itemID)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "获取漫画内容失败: " + err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"images": imgs})
 }
 
 // Downloads 下载任务列表

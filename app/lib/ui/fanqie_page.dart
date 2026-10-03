@@ -9,13 +9,15 @@ import '../core/session.dart';
 import '../core/store_pref.dart';
 import '../models.dart';
 import 'store_book_detail_page.dart';
+import 'store_comic_detail_page.dart';
 import 'store_rank_page.dart';
 import 'store_search_page.dart';
 import 'widgets.dart';
 
 /// 番茄书城：UI 复刻番茄 App 书城。
 /// 「推荐」频道 = App 同源 feed（实时热度排行）+ 官方近似分榜；
-/// 「小说」频道 = 官方分类榜单；正文按需回源，可整本离线缓存。
+/// 「小说」频道 = 官方筛选瀑布流（cell/change + selected_items，10/04 协议定案）；
+/// 「漫画」频道 = 官方漫画瀑布流（cell/change tab_type=9），点开即看。
 class FanqiePage extends ConsumerStatefulWidget {
   const FanqiePage({super.key});
 
@@ -26,8 +28,8 @@ class FanqiePage extends ConsumerStatefulWidget {
 class _FanqiePageState extends ConsumerState<FanqiePage> {
   ApiClient get _api => ref.read(sessionProvider).api!;
 
-  // ── 频道 ──
-  static const _channels = ['推荐', '小说', '听书', '经典', '视频', '知识', '漫画', '新书'];
+  // ── 频道（协议未接的频道不保留，避免死 tab）──
+  static const _channels = ['推荐', '小说', '漫画'];
   String _channel = '推荐';
 
   // ── 推荐频道：猜你喜欢瀑布流（cell/change 翻页，全程不依赖 tab/v）──
@@ -52,17 +54,30 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
   final Set<String> _boardLoading = {};
   final Map<String, String?> _boardErrors = {};
 
-  // ── 小说频道：官方分类榜单 ──
-  List<RankGroup> _rankGroups = const [];
-  bool _ranksLoading = false;
-  String? _ranksError;
-  String _selRankId = '';
-  String _selRankName = '';
-  List<StoreBook> _rankBooks = [];
-  int _rankOffset = 0;
-  bool _rankHasMore = true;
-  bool _rankLoading = false;
-  String? _rankBooksError;
+  // ── 小说频道：官方筛选瀑布流（筛选值 = 官方 selected_items，10/04 实测）──
+  static const _novelFilterOptions = [
+    ('完结', 'finished'),
+    ('一年内上架', 'online_in_past_one_year'),
+    ('200万字以上', 'word_num_gt_200w'),
+    ('男生', 'male'),
+    ('女生', 'female'),
+  ];
+  final Set<String> _novelFilters = {};
+  bool _novelFiltersInit = false;
+  List<FeedBook> _novelBooks = const [];
+  int _novelOffset = 0;
+  bool _novelHasMore = true;
+  bool _novelLoading = false;
+  String? _novelError;
+  Timer? _novelRetryTimer;
+
+  // ── 漫画频道：官方漫画瀑布流（tab_type=9）──
+  List<ComicBook> _comicBooks = const [];
+  int _comicOffset = 0;
+  bool _comicHasMore = true;
+  bool _comicLoading = false;
+  String? _comicError;
+  Timer? _comicRetryTimer;
 
   @override
   void initState() {
@@ -74,6 +89,8 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
   @override
   void dispose() {
     _guessRetryTimer?.cancel();
+    _novelRetryTimer?.cancel();
+    _comicRetryTimer?.cancel();
     super.dispose();
   }
 
@@ -114,81 +131,110 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
     }
   }
 
-  // ── 小说频道：榜单分组 + 榜单书籍 ────────────────────────────────
-  Future<void> _loadRankGroups() async {
+  // ── 小说频道：官方筛选瀑布流 ─────────────────────────────────────
+  void _ensureNovelFilters() {
+    if (_novelFiltersInit) return;
+    _novelFiltersInit = true;
+    // 频道偏好联动：男频默认「男生」筛选，女频默认「女生」
+    _novelFilters.add(
+        ref.read(storeGenderProvider) == '0' ? 'female' : 'male');
+  }
+
+  Future<void> _loadNovelPage({bool reset = false}) async {
+    if (_novelLoading) return;
+    if (!reset && !_novelHasMore) return;
+    _ensureNovelFilters();
     setState(() {
-      _ranksLoading = true;
-      _ranksError = null;
+      _novelLoading = true;
+      if (reset) {
+        _novelBooks = const [];
+        _novelOffset = 0;
+        _novelHasMore = true;
+      }
+      _novelError = null;
     });
     try {
-      final groups = await _api.storeRanks();
+      final r = await _api.storeNovelFeed(
+          filters: _novelFilters.toList().join(','),
+          offset: reset ? 0 : _novelOffset);
       if (!mounted) return;
       setState(() {
-        _rankGroups = groups;
-        _ranksLoading = false;
+        _novelBooks = reset ? r.books : [..._novelBooks, ...r.books];
+        _novelOffset = r.nextOffset;
+        _novelHasMore = r.hasMore;
+        _novelLoading = false;
       });
-      final first = groups.isNotEmpty ? groups.first.items.firstOrNull : null;
-      if (first != null) _selectRank(first);
     } on ApiException catch (e) {
       if (!mounted) return;
       setState(() {
-        _ranksLoading = false;
-        _ranksError = e.message;
+        _novelLoading = false;
+        _novelError = e.message;
+      });
+      _novelRetryTimer?.cancel();
+      _novelRetryTimer = Timer(const Duration(seconds: 90), () {
+        if (mounted && _novelError != null) _loadNovelPage(reset: reset);
       });
     }
   }
 
-  void _selectRank(RankItem item) {
+  void _toggleNovelFilter(String value) {
     setState(() {
-      _selRankId = item.id;
-      _selRankName = item.name;
-      _rankBooks = [];
-      _rankOffset = 0;
-      _rankHasMore = true;
-      _rankBooksError = null;
+      if (_novelFilters.contains(value)) {
+        _novelFilters.remove(value);
+      } else {
+        // 性别组内互斥（官方面板同语义）
+        if (value == 'male') _novelFilters.remove('female');
+        if (value == 'female') _novelFilters.remove('male');
+        _novelFilters.add(value);
+      }
     });
-    _loadRankBooks(reset: true);
+    _loadNovelPage(reset: true);
   }
 
-  Future<void> _loadRankBooks({bool reset = false}) async {
-    if (_rankLoading || _selRankId.isEmpty) return;
-    if (!reset && !_rankHasMore) return;
+  // ── 漫画频道：官方漫画瀑布流 ─────────────────────────────────────
+  Future<void> _loadComicPage({bool reset = false}) async {
+    if (_comicLoading) return;
+    if (!reset && !_comicHasMore) return;
     setState(() {
-      _rankLoading = true;
+      _comicLoading = true;
       if (reset) {
-        _rankBooks = [];
-        _rankOffset = 0;
+        _comicBooks = const [];
+        _comicOffset = 0;
+        _comicHasMore = true;
       }
-      _rankBooksError = null;
+      _comicError = null;
     });
     try {
-      final books =
-          await _api.storeRankBooks(_selRankId, offset: _rankOffset, limit: 15);
+      final r = await _api.storeComicFeed(offset: reset ? 0 : _comicOffset);
       if (!mounted) return;
       setState(() {
-        _rankBooks = reset ? books : [..._rankBooks, ...books];
-        _rankOffset += books.length;
-        _rankHasMore = books.length >= 15;
-        _rankLoading = false;
+        _comicBooks = reset ? r.items : [..._comicBooks, ...r.items];
+        _comicOffset = r.nextOffset;
+        _comicHasMore = r.hasMore;
+        _comicLoading = false;
       });
     } on ApiException catch (e) {
       if (!mounted) return;
       setState(() {
-        _rankLoading = false;
-        _rankBooksError = e.message;
+        _comicLoading = false;
+        _comicError = e.message;
+      });
+      _comicRetryTimer?.cancel();
+      _comicRetryTimer = Timer(const Duration(seconds: 90), () {
+        if (mounted && _comicError != null) _loadComicPage(reset: reset);
       });
     }
   }
 
   Future<void> _refresh() async {
-    if (_channel == '小说') {
-      if (_rankBooks.isNotEmpty || _selRankId.isNotEmpty) {
-        await _loadRankBooks(reset: true);
-      } else {
-        await _loadRankGroups();
-      }
-    } else {
-      await _loadGuessPage(reset: true);
+    switch (_channel) {
+      case '小说':
+        await _loadNovelPage(reset: true);
+      case '漫画':
+        await _loadComicPage(reset: true);
+      default:
+        _ensureBoard(_boardKeys[_rankTabIdx]!);
+        await _loadGuessPage(reset: true);
     }
   }
 
@@ -209,7 +255,11 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
             Expanded(
               child: RefreshIndicator(
                 onRefresh: _refresh,
-                child: _channel == '小说' ? _novelBody(context) : _recBody(context),
+                child: switch (_channel) {
+                  '小说' => _novelBody(context),
+                  '漫画' => _comicBody(context),
+                  _ => _recBody(context),
+                },
               ),
             ),
           ],
@@ -271,15 +321,11 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
             behavior: HitTestBehavior.opaque,
             onTap: () {
               if (active) return;
+              setState(() => _channel = name);
               if (name == '小说') {
-                setState(() => _channel = '小说');
-                if (_rankGroups.isEmpty && !_ranksLoading) _loadRankGroups();
-              } else if (name == '推荐') {
-                setState(() => _channel = '推荐');
-              } else {
-                ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                    content: Text('$name 频道即将上线'),
-                    behavior: SnackBarBehavior.floating));
+                _loadNovelPage(reset: _novelBooks.isEmpty);
+              } else if (name == '漫画') {
+                _loadComicPage(reset: _comicBooks.isEmpty);
               }
             },
             child: Center(
@@ -599,104 +645,161 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
     );
   }
 
-  // ── 小说频道（官方分类榜单）──────────────────────────────────────
+  // ── 小说频道：官方筛选条 + 双列瀑布流（tab_type=25 协议）────────────
   Widget _novelBody(BuildContext context) {
-    if (_ranksLoading && _rankGroups.isEmpty) return _buildSkeleton(context);
-    if (_ranksError != null && _rankGroups.isEmpty) {
-      return ListView(physics: const AlwaysScrollableScrollPhysics(), children: [
-        ErrorRetry(message: _ranksError!, onRetry: _loadRankGroups)
-      ]);
+    if (_novelLoading && _novelBooks.isEmpty && _novelError == null) {
+      return _buildSkeleton(context);
     }
-    if (_rankGroups.isEmpty) {
-      return ListView(children: const [
-        EmptyView(icon: Icons.category_rounded, title: '暂无榜单分组')
-      ]);
-    }
-
-    return ListView(
-      physics: const AlwaysScrollableScrollPhysics(),
-      padding: const EdgeInsets.only(bottom: 32),
-      children: [
-        SizedBox(
-          height: 40,
-          child: ListView.separated(
-            scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.symmetric(horizontal: 14),
-            itemCount: _currentGroupItems.length,
-            separatorBuilder: (context, index) => const SizedBox(width: 8),
-            itemBuilder: (context, i) {
-              final item = _currentGroupItems[i];
-              final selected = item.id == _selRankId;
-              return ChoiceChip(
-                label: Text(item.name),
-                selected: selected,
-                onSelected: (_) => _selectRank(item),
-                selectedColor: MoStyle.strongOf(context),
-                labelStyle: TextStyle(
-                    fontSize: 12.5,
-                    fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-                    color: selected
-                        ? Colors.white
-                        : Theme.of(context).colorScheme.onSurface),
-                showCheckmark: false,
-                visualDensity: VisualDensity.compact,
-              );
-            },
-          ),
-        ),
-        if (_rankBooksError != null)
-          Padding(
-            padding: const EdgeInsets.all(14),
-            child: ErrorRetry(
-                message: _rankBooksError!,
-                onRetry: () => _loadRankBooks(reset: true)),
-          ),
-        if (_selRankName.isNotEmpty && _rankBooks.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(14, 10, 14, 0),
-            child: Text(_selRankName,
-                style: TextStyle(
-                    fontFamily: MoStyle.titleFont,
-                    fontSize: 17,
-                    fontWeight: FontWeight.w800,
-                    color: MoStyle.strongOf(context))),
-          ),
-        for (var i = 0; i < _rankBooks.length; i++)
-          _FeedTile(
-              title: _rankBooks[i].title,
-              author: _rankBooks[i].author,
-              cover: _rankBooks[i].cover,
-              metric: _rankBooks[i].wordCount.isNotEmpty
-                  ? _rankBooks[i].wordCount
-                  : _rankBooks[i].readCount,
-              finished: _rankBooks[i].finished,
-              rank: i + 1,
-              onTap: () =>
-                  _openDetail(_rankBooks[i].id, _rankBooks[i].title)),
-        if (_rankLoading)
-          const Padding(
-            padding: EdgeInsets.all(14),
-            child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
-          )
-        else if (_rankHasMore && _rankBooks.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 10),
-            child: Center(
-              child: OutlinedButton(
-                onPressed: () => _loadRankBooks(),
-                child: const Text('加载更多'),
+    return NotificationListener<ScrollNotification>(
+      onNotification: (n) {
+        if (n.metrics.axis == Axis.vertical &&
+            n.metrics.pixels >= n.metrics.maxScrollExtent - 800) {
+          _loadNovelPage();
+        }
+        return false;
+      },
+      child: CustomScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        slivers: [
+          SliverToBoxAdapter(child: _buildNovelChips(context)),
+          if (_novelError != null && _novelBooks.isEmpty)
+            SliverToBoxAdapter(
+                child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: ErrorRetry(
+                  message: _novelError!, onRetry: () => _loadNovelPage(reset: true)),
+            ))
+          else if (_novelBooks.isEmpty && !_novelLoading)
+            const SliverToBoxAdapter(
+                child: EmptyView(icon: Icons.auto_stories_rounded, title: '该筛选组合暂无书籍'))
+          else
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(10, 6, 10, 32),
+              sliver: SliverGrid(
+                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 2,
+                  crossAxisSpacing: 10,
+                  mainAxisSpacing: 14,
+                  childAspectRatio: 0.55,
+                ),
+                delegate: SliverChildBuilderDelegate(
+                  (context, i) => _NovelCard(
+                      book: _novelBooks[i],
+                      onTap: () =>
+                          _openDetail(_novelBooks[i].id, _novelBooks[i].title)),
+                  childCount: _novelBooks.length,
+                ),
               ),
             ),
-          ),
-      ],
+          if (_novelLoading)
+            const SliverToBoxAdapter(
+                child: Padding(
+              padding: EdgeInsets.all(14),
+              child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+            )),
+        ],
+      ),
     );
   }
 
-  List<RankItem> get _currentGroupItems {
-    for (final g in _rankGroups) {
-      if (g.items.any((it) => it.id == _selRankId)) return g.items;
+  // ── 筛选条（官方快捷栏同构：完结/一年内上架/200万字以上/男生/女生）──
+  Widget _buildNovelChips(BuildContext context) {
+    return SizedBox(
+      height: 40,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 14),
+        itemCount: _novelFilterOptions.length,
+        separatorBuilder: (context, index) => const SizedBox(width: 8),
+        itemBuilder: (context, i) {
+          final (label, value) = _novelFilterOptions[i];
+          final selected = _novelFilters.contains(value);
+          return GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () => _toggleNovelFilter(value),
+            child: Container(
+              alignment: Alignment.center,
+              padding: const EdgeInsets.symmetric(horizontal: 14),
+              decoration: BoxDecoration(
+                color: selected
+                    ? MoStyle.strongOf(context).withValues(alpha: .12)
+                    : Theme.of(context)
+                        .colorScheme
+                        .surfaceContainerHighest
+                        .withValues(alpha: .6),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(label,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                    color: selected
+                        ? MoStyle.strongOf(context)
+                        : Theme.of(context).colorScheme.onSurface,
+                  )),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  // ── 漫画频道：双列卡瀑布流（tab_type=9 协议）──────────────────────
+  Widget _comicBody(BuildContext context) {
+    if (_comicLoading && _comicBooks.isEmpty && _comicError == null) {
+      return _buildSkeleton(context);
     }
-    return _rankGroups.isNotEmpty ? _rankGroups.first.items : const [];
+    return NotificationListener<ScrollNotification>(
+      onNotification: (n) {
+        if (n.metrics.axis == Axis.vertical &&
+            n.metrics.pixels >= n.metrics.maxScrollExtent - 800) {
+          _loadComicPage();
+        }
+        return false;
+      },
+      child: CustomScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        slivers: [
+          if (_comicError != null && _comicBooks.isEmpty)
+            SliverToBoxAdapter(
+                child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: ErrorRetry(
+                  message: _comicError!, onRetry: () => _loadComicPage(reset: true)),
+            ))
+          else if (_comicBooks.isEmpty && !_comicLoading)
+            const SliverToBoxAdapter(
+                child: EmptyView(icon: Icons.image_rounded, title: '漫画频道暂无内容'))
+          else
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(10, 6, 10, 32),
+              sliver: SliverGrid(
+                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 2,
+                  crossAxisSpacing: 10,
+                  mainAxisSpacing: 14,
+                  childAspectRatio: 0.55,
+                ),
+                delegate: SliverChildBuilderDelegate(
+                  (context, i) => _ComicCard(
+                      book: _comicBooks[i],
+                      onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                          builder: (_) => StoreComicDetailPage(
+                              bookId: _comicBooks[i].id,
+                              title: _comicBooks[i].title)))),
+                  childCount: _comicBooks.length,
+                ),
+              ),
+            ),
+          if (_comicLoading)
+            const SliverToBoxAdapter(
+                child: Padding(
+              padding: EdgeInsets.all(14),
+              child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+            )),
+        ],
+      ),
+    );
   }
 
   // ── 通用组件 ────────────────────────────────────────────────────
@@ -874,7 +977,6 @@ class _FeedTile extends StatelessWidget {
     required this.metric,
     required this.finished,
     required this.onTap,
-    this.rank,
   });
 
   final String title;
@@ -882,14 +984,10 @@ class _FeedTile extends StatelessWidget {
   final String cover;
   final String metric;
   final bool finished;
-  final int? rank;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    final rankColor = (rank != null && rank! <= 3)
-        ? MoStyle.primaryStrong
-        : Theme.of(context).colorScheme.outline;
     return InkWell(
       borderRadius: BorderRadius.circular(12),
       onTap: onTap,
@@ -897,18 +995,6 @@ class _FeedTile extends StatelessWidget {
         padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 14),
         child: Row(
           children: [
-            SizedBox(
-              width: 30,
-              child: Text(rank == null ? '·' : '$rank',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontFamily: MoStyle.titleFont,
-                    fontSize: 18,
-                    fontWeight: FontWeight.w800,
-                    fontStyle: FontStyle.italic,
-                    color: rankColor,
-                  )),
-            ),
             SizedBox(
               width: 52,
               child: AspectRatio(
@@ -977,5 +1063,128 @@ class _FeedTile extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+// ── 双列大卡：小说频道/漫画频道共用骨架（官方瀑布流同构）──────────────
+class _ChannelCard extends StatelessWidget {
+  const _ChannelCard({
+    required this.title,
+    required this.cover,
+    required this.subtitle,
+    this.score = '',
+    required this.onTap,
+  });
+
+  final String title;
+  final String cover;
+  final String subtitle;
+  final String score; // 封面左下角评分角标（如 "9.4分"）
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(10),
+      onTap: onTap,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Stack(
+            children: [
+              AspectRatio(
+                aspectRatio: 3 / 4,
+                child: BookCover(
+                    url: cover.isEmpty ? null : cover,
+                    title: title,
+                    cacheWidth: 400),
+              ),
+              if (score.isNotEmpty)
+                Positioned(
+                  left: 6,
+                  bottom: 6,
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: .45),
+                      borderRadius: BorderRadius.circular(5),
+                    ),
+                    child: Text(score,
+                        style: const TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.white)),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(title,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                  fontFamily: MoStyle.titleFont,
+                  fontSize: 13.5,
+                  height: 1.25,
+                  fontWeight: FontWeight.w600)),
+          if (subtitle.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 3),
+              child: Text(subtitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                      fontSize: 11,
+                      color: Theme.of(context).colorScheme.outline)),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _NovelCard extends StatelessWidget {
+  const _NovelCard({required this.book, required this.onTap});
+
+  final FeedBook book;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final sub = [
+      if (book.category.isNotEmpty) book.category,
+      if (book.wordCountText.isNotEmpty) book.wordCountText,
+      if (book.readCount.isNotEmpty) book.readCount,
+    ].join(' · ');
+    return _ChannelCard(
+        title: book.title,
+        cover: book.cover,
+        subtitle: sub,
+        score: book.score.isEmpty ? '' : '${book.score}分',
+        onTap: onTap);
+  }
+}
+
+class _ComicCard extends StatelessWidget {
+  const _ComicCard({required this.book, required this.onTap});
+
+  final ComicBook book;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final sub = [
+      if (book.category.isNotEmpty) book.category,
+      if (book.updateTag.isNotEmpty) book.updateTag,
+      if (book.wordCount.isNotEmpty) book.wordCount,
+      if (book.readCount.isNotEmpty) book.readCount,
+    ].join(' · ');
+    return _ChannelCard(
+        title: book.title,
+        cover: book.cover,
+        subtitle: sub,
+        score: book.score.isEmpty ? '' : '${book.score}分',
+        onTap: onTap);
   }
 }

@@ -170,3 +170,20 @@ Hook 点：`com.bytedance.frameworks.baselib.network.http.NetworkParams.tryAddSe
 - 生产 fq-unidbg 配置已切 73733 身份（备份 .bak2），VM 端到端实测：
   装 APK → 登录 → 书城 → 目录跳章（第6章/第326章深章按需）全部正常
 - 在线读代码层同日改为 batch-only（ChapterContentsBatch，当前章+下一章合并一请求）
+
+## 真机签名桥（bridge/）——第三条正文通道
+- 背景：unidbg 身份修正后正文通道仍会周期性被标记（~1.5h 一次，1-2h 自愈），
+  标记窗口内「网页只给试读的章」无法在线读
+- 原理：frida 在真番茄 App 进程内复用其**真实请求头对象**调 tryAddSecurityFactor 代签，
+  代发 batch_full → 上游密文 → 交 fq-unidbg 新端点 /api/fqnovel/decrypt-content 解密
+  （registerkey 密钥按需获取）→ 明文回 Go
+- 组成：bridge/bridge_sign.js（RPC sign）、bridge/bridge_server.py（HTTP :9998，
+  需 PC 常驻 + 模拟器保持运行）、bridge/device_tail.txt（设备参数尾巴，取自抓包）
+- Go 链路：在线读 web → unidbg batch → 签名桥（XS_APP_BRIDGE_URL，空=禁用）
+- 运维注意：
+  - fq-unidbg 已绑定 192.168.31.16:9999（桥要从 PC 访问解密端点）
+  - 改镜像后必须 `docker compose up -d --force-recreate fq-unidbg`，
+    **docker restart 不会换容器文件系统**（旧 jar 继续跑，当天排查坑）
+  - Dockerfile 的 COPY src 层曾确定性产出旧 jar（原因未查明），
+    可靠构建法：maven 容器挂载编译 + docker cp 换 jar + commit
+- 实测：书40 第169章（网页试读+unidbg 双失败）经桥取回 2134 字明文 ✓

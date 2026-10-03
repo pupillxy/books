@@ -1,11 +1,14 @@
 package handler
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -21,8 +24,9 @@ type BookHandler struct {
 	Scanner *scanner.Scanner
 	FQ      *fanqie.Client
 	UNI     *unidbg.Client
-	// RequestDownload 在正文两源都失败时被调用（自动触发整本获取，由 main 注入 storeH.triggerDownload）
-	RequestDownload func(fid, title string, bookID int64) string
+	// BridgeURL 真机签名桥地址（XS_APP_BRIDGE_URL，空=禁用）：unidbg 被内容风控时的
+	// 最终兜底——桥让真番茄 App 自己签名代发正文，风控无法区分
+	BridgeURL string
 }
 
 func (h *BookHandler) List(c *gin.Context) {
@@ -117,10 +121,6 @@ func (h *BookHandler) Chapter(c *gin.Context) {
 	res, ferr := h.fetchOnlineContents(book.FanqieID, ids, titles)
 	content, ctitle := res[srcID], ch.Title
 	if len([]rune(content)) < 50 {
-		// 双源都拿不到正文（多为设备内容风控，冷却后自愈）：提示重试，后台顺带准备整本
-		if h.RequestDownload != nil {
-			go func() { _ = h.RequestDownload(book.FanqieID, book.Title, book.ID) }()
-		}
 		log.Printf("[store] 在线正文失败 book=%d idx=%d locked=%v: %v", id, idx, errors.Is(ferr, fanqie.ErrChapterLocked), ferr)
 		c.JSON(http.StatusPaymentRequired, gin.H{"error": "该章节正文暂时获取失败，请稍后重试", "title": ctitle})
 		return
@@ -167,7 +167,61 @@ func (h *BookHandler) fetchOnlineContents(fid string, srcIDs []string, titles ma
 			}
 		}
 	}
+	// 最终兜底：真机签名桥（App 自己签名代发，风控无法区分；unidbg 被打标时的救命通道）
+	if h.BridgeURL != "" {
+		for _, sid := range missing {
+			if _, ok := out[sid]; ok {
+				continue
+			}
+			txt, err := h.bridgeChapter(fid, sid, titles[sid])
+			if err != nil {
+				log.Printf("[bridge] 正文兜底失败 sid=%s: %v", sid, err)
+				continue
+			}
+			out[sid] = txt
+		}
+	}
 	return out, ferr
+}
+
+// bridgeChapter 经真机签名桥取单章正文（App 代签代发 + Java 解密，桥内完成）
+func (h *BookHandler) bridgeChapter(fid, srcID, title string) (string, error) {
+	body, _ := json.Marshal(map[string]string{
+		"path":  "/reading/reader/batch_full/v",
+		"query": "item_ids=" + srcID + "&key_register_ts=0&book_id=" + fid + "&req_type=1",
+	})
+	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(h.BridgeURL, "/")+"/content",
+		bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Code int `json:"code"`
+		Data struct {
+			Chapters map[string]struct {
+				TxtContent string `json:"txtContent"`
+			} `json:"chapters"`
+		} `json:"data"`
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", err
+	}
+	if out.Code != 0 {
+		return "", errors.New(out.Error)
+	}
+	item, ok := out.Data.Chapters[srcID]
+	if !ok || item.TxtContent == "" {
+		return "", errors.New("桥返回无正文")
+	}
+	return strings.TrimPrefix(item.TxtContent, title+"\n"), nil
 }
 
 func (h *BookHandler) TriggerScan(c *gin.Context) {

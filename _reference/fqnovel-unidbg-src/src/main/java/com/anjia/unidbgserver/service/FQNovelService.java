@@ -485,6 +485,20 @@ public class FQNovelService {
      * @param htmlContent HTML内容
      * @return 提取的纯文本内容
      */
+    /**
+     * 解密上游密文正文（供外部签名桥使用：桥用真 App 身份取回密文，这里负责解密+提文本）
+     */
+    public String decryptContentExternal(String content, Long keyVersion) {
+        try {
+            String key = registerKeyService.getDecryptionKey(keyVersion);
+            String decrypted = FqCrypto.decryptAndDecompressContent(content, key);
+            return extractTextFromHtml(decrypted);
+        } catch (Exception e) {
+            log.error("外部解密失败 - keyVersion: {}", keyVersion, e);
+            return "";
+        }
+    }
+
     private String extractTextFromHtml(String htmlContent) {
         if (htmlContent == null || htmlContent.trim().isEmpty()) {
             return "";

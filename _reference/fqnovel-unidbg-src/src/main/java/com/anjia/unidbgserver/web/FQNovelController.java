@@ -152,6 +152,21 @@ public class FQNovelController {
     }
 
     /**
+     * 解密密文正文（配合外部签名桥：真 App 代取的密文在此解密）
+     */
+    @PostMapping("/decrypt-content")
+    public Map<String, Object> decryptContent(@RequestBody Map<String, Object> request) {
+        String content = (String) request.get("content");
+        Object kv = request.get("keyVersion");
+        Long keyVersion = kv == null ? null : Long.valueOf(kv.toString());
+        String txt = fqNovelService.decryptContentExternal(content, keyVersion);
+        Map<String, Object> resp = new HashMap<>();
+        resp.put("code", txt.isEmpty() ? -1 : 0);
+        resp.put("txtContent", txt);
+        return resp;
+    }
+
+    /**
      * 健康检查接口
      * 
      * @return 服务状态

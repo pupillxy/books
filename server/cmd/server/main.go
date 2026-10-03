@@ -69,7 +69,8 @@ func main() {
 	fqClient := fanqie.NewClient(os.Getenv("XS_FQ_COOKIE"))
 	tndClient := tnd.New(cfg.TNDURL, cfg.TNDPassword)
 	uniClient := unidbg.New(cfg.UnidbgURL) // unidbg 签名服务：番茄海外版 SO 自算签名
-	book := &handler.BookHandler{DB: store, Scanner: sc, FQ: fqClient, UNI: uniClient}
+	book := &handler.BookHandler{DB: store, Scanner: sc, FQ: fqClient, UNI: uniClient,
+		BridgeURL: os.Getenv("XS_APP_BRIDGE_URL")} // 真机签名桥：unidbg 被内容风控时的兜底
 	shelf := &handler.ShelfHandler{DB: store}
 	progress := &handler.ProgressHandler{DB: store}
 	storeH := &handler.StoreHandler{DB: store, FQ: fqClient, TND: tndClient, UNI: uniClient}

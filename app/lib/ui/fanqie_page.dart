@@ -358,6 +358,7 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
             ],
           ),
         ),
+        _buildRecFeed(context),
       ],
     );
   }
@@ -453,44 +454,86 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
     }
 
     final top8 = entries.take(8).toList();
-    final rest = entries.length > 8 ? entries.sublist(8) : const <_RankEntry>[];
 
-    return Column(
+    // 官方同构：榜单卡只展示 8 本（2×4），不做 9-16 展开——
+    // 下方瀑布流是独立 feed，与子榜切换无关（10/03 官方 App 实测）
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(
-                child: Column(
-                    children: [
-                  for (var i = 0; i < 4 && i < top8.length; i++)
-                    _RankCell(book: top8[i], rank: i + 1)
-                ])),
-            Expanded(
-                child: Column(
-                    children: [
-                  for (var i = 4; i < 8 && i < top8.length; i++)
-                    _RankCell(book: top8[i], rank: i + 1)
-                ])),
-          ],
-        ),
-        if (rest.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(0, 4, 0, 0),
+        Expanded(
             child: Column(
-              children: [
-                for (var i = 0; i < rest.length; i++)
-                  _FeedTile(
-                      title: rest[i].title,
-                      author: rest[i].author,
-                      cover: rest[i].cover,
-                      metric: rest[i].metric,
-                      finished: rest[i].finished,
-                      rank: i + 9,
-                      onTap: () => _openDetail(rest[i].id, rest[i].title)),
-              ],
+                children: [
+              for (var i = 0; i < 4 && i < top8.length; i++)
+                _RankCell(book: top8[i], rank: i + 1)
+            ])),
+        Expanded(
+            child: Column(
+                children: [
+              for (var i = 4; i < 8 && i < top8.length; i++)
+                _RankCell(book: top8[i], rank: i + 1)
+            ])),
+      ],
+    );
+  }
+
+  // ── 推荐频道：榜单卡下方的独立瀑布流（App 同源 feed 分区）────────
+  // 与子榜切换完全解耦：切 完本榜/巅峰榜 只刷卡片，此区域保持不变（官方同构）。
+  Widget _buildRecFeed(BuildContext context) {
+    if (_feedSections.isEmpty) {
+      if (_feedLoading) {
+        return const Padding(
+            padding: EdgeInsets.all(18),
+            child: Center(child: CircularProgressIndicator(strokeWidth: 2)));
+      }
+      if (_feedError != null) {
+        return Padding(
+            padding: const EdgeInsets.fromLTRB(14, 12, 14, 0),
+            child: ErrorRetry(message: _feedError!, onRetry: _loadFeed));
+      }
+      return const SizedBox.shrink();
+    }
+    final ranked =
+        _feedSections.where((s) => s.title.contains('榜')).toList();
+    final feedSecs =
+        _feedSections.where((s) => !s.title.contains('榜')).toList();
+    // 兜底：上游只下发榜单分区时，把推荐榜第 9 名起固定挂在此处
+    //（锚定推荐榜本身，切子榜不影响）
+    final sections = feedSecs.isNotEmpty
+        ? feedSecs
+        : (ranked.isNotEmpty
+            ? [
+                FeedSection(
+                    title: ranked.first.title,
+                    subtitle: ranked.first.subtitle,
+                    books: ranked.first.books.skip(8).toList())
+              ]
+            : const <FeedSection>[]);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (final sec in sections)
+          if (sec.books.isNotEmpty) ...[
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 18, 14, 4),
+              child: Text(sec.title,
+                  style: TextStyle(
+                      fontFamily: MoStyle.titleFont,
+                      fontSize: 17,
+                      fontWeight: FontWeight.w800,
+                      color: MoStyle.strongOf(context))),
             ),
-          ),
+            for (var i = 0; i < sec.books.length; i++)
+              _FeedTile(
+                  title: sec.books[i].title,
+                  author: sec.books[i].author,
+                  cover: sec.books[i].cover,
+                  metric: sec.books[i].rankScore.isNotEmpty
+                      ? sec.books[i].rankScore
+                      : sec.books[i].readCount,
+                  finished: sec.books[i].finished,
+                  onTap: () =>
+                      _openDetail(sec.books[i].id, sec.books[i].title)),
+          ],
       ],
     );
   }

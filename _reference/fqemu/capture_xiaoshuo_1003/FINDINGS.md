@@ -128,3 +128,12 @@ Hook 点：`com.bytedance.frameworks.baselib.network.http.NetworkParams.tryAddSe
    application.yml`（备份 .bak1）并重启容器，`/api/books/34/chapters/62` 端到端返回全文。
    同时 compose `XS_UNIDBG_ROTATE` 1→0（备份 .bak6）：轮换保 feed 毁正文资历，是本次
    事故根因；设备被标记时手动 register+重启并评估资历代价。
+
+## 推荐频道切子榜行为 — 实测（同日第三次采集，rankswitch_urls.jsonl）
+- 切 推荐榜→完本榜→巅峰榜 每次只发**一发** `cell/change/v?tab_type=2&cell_id=<榜单卡>&
+  algo_type=100/200/108&client_req_type=4&limit=16&offset=0`，只刷榜单卡自身
+- 卡片下方瀑布流（漫剧/爆款大卡）**完全不动、零请求**——它是 tab/v（tab_type=-1）
+  首屏内嵌的独立 feed，与榜单卡无任何关联
+- 官方卡片视觉上固定展示 8 本（2×4），limit=16 是协议批量，9-16 不直接铺在页面上
+- 结论：App 复刻应「卡片 top8 + 下方独立瀑布流」，9-16 不要渲染成列表挂在卡片下
+  （会让用户误以为瀑布流跟榜联动）——fanqie_page.dart 已按此改造

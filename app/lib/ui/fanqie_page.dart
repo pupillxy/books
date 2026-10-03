@@ -46,6 +46,7 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
     3: 'new',
   };
   int _rankTabIdx = 0;
+  int _rankPage = 0; // 榜单卡横滑页码（官方同构：16 本两页，跟 tab 一样左右翻）
   final Map<String, List<LibraryBook>> _boardBooks = {};
   final Set<String> _boardLoading = {};
   final Map<String, String?> _boardErrors = {};
@@ -355,7 +356,10 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
                       GestureDetector(
                         behavior: HitTestBehavior.opaque,
                         onTap: () {
-                          setState(() => _rankTabIdx = i);
+                          setState(() {
+                            _rankTabIdx = i;
+                            _rankPage = 0;
+                          });
                           _ensureBoard(_boardKeys[i]!);
                         },
                         child: Padding(
@@ -469,25 +473,66 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
       );
     }
 
-    final top8 = entries.take(8).toList();
+    // 官方同构：16 本分两页左右横滑（跟 tab 一样一页页翻，非滚动条），
+    // 每页 2 列 × 4 行 = 8 本；下方瀑布流是独立 feed，与子榜切换无关
+    final shown = entries.take(16).toList();
+    final pageBooks = <List<_RankEntry>>[
+      shown.take(8).toList(),
+      if (shown.length > 8) shown.sublist(8),
+    ];
 
-    // 官方同构：榜单卡只展示 8 本（2×4），不做 9-16 展开——
-    // 下方瀑布流是独立 feed，与子榜切换无关（10/03 官方 App 实测）
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
+    return Column(
       children: [
-        Expanded(
-            child: Column(
-                children: [
-              for (var i = 0; i < 4 && i < top8.length; i++)
-                _RankCell(book: top8[i], rank: i + 1)
-            ])),
-        Expanded(
-            child: Column(
-                children: [
-              for (var i = 4; i < 8 && i < top8.length; i++)
-                _RankCell(book: top8[i], rank: i + 1)
-            ])),
+        SizedBox(
+          height: 4 * 96.0,
+          child: PageView(
+            onPageChanged: (page) => setState(() => _rankPage = page),
+            children: [
+              for (var p = 0; p < pageBooks.length; p++)
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                        child: Column(children: [
+                      for (var i = 0; i < 4 && i < pageBooks[p].length; i++)
+                        _RankCell(
+                            book: pageBooks[p][i], rank: p * 8 + i + 1)
+                    ])),
+                    Expanded(
+                        child: Column(children: [
+                      for (var i = 4; i < 8 && i < pageBooks[p].length; i++)
+                        _RankCell(
+                            book: pageBooks[p][i], rank: p * 8 + i + 1)
+                    ])),
+                  ],
+                ),
+            ],
+          ),
+        ),
+        if (pageBooks.length > 1)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                for (var p = 0; p < pageBooks.length; p++)
+                  Container(
+                    width: 6,
+                    height: 6,
+                    margin: const EdgeInsets.symmetric(horizontal: 3),
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: p == _rankPage
+                          ? Theme.of(context).colorScheme.primary
+                          : Theme.of(context)
+                              .colorScheme
+                              .outline
+                              .withValues(alpha: 0.35),
+                    ),
+                  ),
+              ],
+            ),
+          ),
       ],
     );
   }

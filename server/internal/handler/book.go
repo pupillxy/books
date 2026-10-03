@@ -103,7 +103,19 @@ func (h *BookHandler) Chapter(c *gin.Context) {
 		return
 	}
 
-	content, ctitle, ferr := h.fetchOnlineContent(book.FanqieID, srcID, ch.Title)
+	// 当前章 + 下一章合并为一次批量请求（batch 才是免风控端点，单章高频必被打标）
+	ids := []string{srcID}
+	titles := map[string]string{srcID: ch.Title}
+	nextSrc := ""
+	if nxCh, err2 := h.DB.GetChapter(id, idx+1); err2 == nil {
+		if nxSrc, err3 := h.DB.GetChapterSrcID(id, idx+1); err3 == nil && nxSrc != "" {
+			ids = append(ids, nxSrc)
+			titles[nxSrc] = nxCh.Title
+			nextSrc = nxSrc
+		}
+	}
+	res, ferr := h.fetchOnlineContents(book.FanqieID, ids, titles)
+	content, ctitle := res[srcID], ch.Title
 	if len([]rune(content)) < 50 {
 		// 双源都拿不到正文（多为设备内容风控，冷却后自愈）：提示重试，后台顺带准备整本
 		if h.RequestDownload != nil {
@@ -116,49 +128,46 @@ func (h *BookHandler) Chapter(c *gin.Context) {
 	_ = h.DB.FillChapterContent(id, idx, content)
 	ch.Content = content
 
-	// 预取下一章：阅读翻页无感（幂等，已有内容自动跳过）
-	go h.backfillChapter(id, book.FanqieID, idx+1)
+	// 下一章已在同一批量里取回，直接落库（阅读翻页无感）
+	if nextSrc != "" {
+		if nxTxt := res[nextSrc]; len([]rune(nxTxt)) >= 50 {
+			_ = h.DB.FillChapterContent(id, idx+1, nxTxt)
+		}
+	}
 
 	c.JSON(http.StatusOK, ch)
 }
 
-// fetchOnlineContent 在线正文：网页端优先，被风控/锁定时退 unidbg（App 协议同源数据）。
-// 返回值 ferr 为网页端错误（ErrChapterLocked 判定用）。
-func (h *BookHandler) fetchOnlineContent(fid, srcID, title string) (content, ctitle string, ferr error) {
-	cc, err := h.FQ.GetChapterContent(srcID)
-	ferr = err
-	if err == nil && len([]rune(cc.Content)) >= 50 {
-		return cc.Content, cc.Title, nil
+// fetchOnlineContents 在线正文：网页端优先，未命中走 unidbg 批量（解密明文）。
+// 单章端点高频必触发设备风控，已弃用（10/03 事故）。titles 用于剥掉
+// unidbg txtContent 首行的章节名；ferr 为网页端的最后一个错误（402 判定用）。
+func (h *BookHandler) fetchOnlineContents(fid string, srcIDs []string, titles map[string]string) (map[string]string, error) {
+	out := map[string]string{}
+	var ferr error
+	var missing []string
+	for _, sid := range srcIDs {
+		cc, err := h.FQ.GetChapterContent(sid)
+		if err == nil && len([]rune(cc.Content)) >= 50 {
+			out[sid] = cc.Content
+			continue
+		}
+		if err != nil && ferr == nil {
+			ferr = err
+		}
+		missing = append(missing, sid)
 	}
-	if h.UNI != nil && h.UNI.Enabled() {
-		txt, uerr := h.UNI.ChapterContent(fid, srcID)
-		if uerr == nil {
-			txt = strings.TrimPrefix(txt, title+"\n") // unidbg txtContent 首行是章节名
-			if len([]rune(txt)) >= 50 {
-				return txt, title, nil
+	if len(missing) > 0 && h.UNI != nil && h.UNI.Enabled() {
+		res, err := h.UNI.ChapterContentsBatch(fid, missing)
+		if err == nil {
+			for sid, txt := range res {
+				txt = strings.TrimPrefix(txt, titles[sid]+"\n")
+				if len([]rune(txt)) >= 50 {
+					out[sid] = txt
+				}
 			}
 		}
 	}
-	return "", "", ferr
-}
-
-// backfillChapter 单章按需回填（幂等）：已有正文直接跳过
-func (h *BookHandler) backfillChapter(bookID int64, fid string, idx int) {
-	if fid == "" {
-		return
-	}
-	ch, err := h.DB.GetChapter(bookID, idx)
-	if err != nil || ch.Content != "" {
-		return
-	}
-	srcID, err := h.DB.GetChapterSrcID(bookID, idx)
-	if err != nil || srcID == "" {
-		return
-	}
-	content, _, _ := h.fetchOnlineContent(fid, srcID, ch.Title)
-	if len([]rune(content)) >= 50 {
-		_ = h.DB.FillChapterContent(bookID, idx, content)
-	}
+	return out, ferr
 }
 
 func (h *BookHandler) TriggerScan(c *gin.Context) {

@@ -527,8 +527,8 @@ func (h *StoreHandler) BookDetail(c *gin.Context) {
 		"chapter_count": len(chapters),
 		"free_count":    free,
 		"finished":      detail.Finished,
-		// 详情页预览前 30 章，完整目录以入库后的 /books/:id 为准
-		"chapters": chapters[:minInt(30, len(chapters))],
+		// 全量目录：在线读已覆盖全部章节，无需截断（10/03）
+		"chapters": chapters,
 	}
 	if bk, err := h.DB.GetBookByFanqieID(fid); err == nil {
 		resp["in_library"] = true

@@ -313,7 +313,7 @@ class _StoreBookDetailPageState extends ConsumerState<StoreBookDetailPage> {
                                 );
                               }
                               final ch = d.chapters[i];
-                              final unlocked = fullyDownloaded || ch.isFree;
+                              // 全章节在线可读（10/03）：不再按 isFree 上锁
                               return ListTile(
                                 dense: true,
                                 visualDensity: VisualDensity.compact,
@@ -325,18 +325,11 @@ class _StoreBookDetailPageState extends ConsumerState<StoreBookDetailPage> {
                                   overflow: TextOverflow.ellipsis,
                                   style: TextStyle(
                                       fontSize: 13.5,
-                                      color: unlocked
-                                          ? cs.onSurfaceVariant
-                                          : cs.outline.withValues(alpha: 0.55)),
+                                      color: cs.onSurfaceVariant),
                                 ),
-                                trailing: unlocked
-                                    ? Icon(Icons.chevron_right,
-                                        size: 18, color: cs.outline)
-                                    : Icon(Icons.lock_outline,
-                                        size: 15, color: cs.outline.withValues(alpha: 0.6)),
-                                onTap: unlocked
-                                    ? () => _openReaderAt(ch.index - 1)
-                                    : () => _toast('下载完成后解锁该章节'),
+                                trailing: Icon(Icons.chevron_right,
+                                    size: 18, color: cs.outline),
+                                onTap: () => _openReaderAt(ch.index - 1),
                               );
                             },
                           ),
@@ -351,7 +344,8 @@ class _StoreBookDetailPageState extends ConsumerState<StoreBookDetailPage> {
   }
 }
 
-/// 章节列表末尾：下载状态提示（进页已自动下载；失败给手动重试）
+/// 章节列表末尾：仅在整本下载有明确进展时提示；在线读已覆盖全部章节，
+/// 「未配置下载/仅免费章/仅展示前 30 章」等提示已成历史（10/03）
 class _DownloadFooter extends StatelessWidget {
   const _DownloadFooter({
     required this.ready,
@@ -364,16 +358,15 @@ class _DownloadFooter extends StatelessWidget {
   final String downloadStatus;
   final VoidCallback? onRetry;
 
-  /// 详情目录仅返回前 30 章时提示完整目录位置
   final bool truncated;
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final hintStyle = TextStyle(fontSize: 11.5, color: cs.outline);
-    Widget child;
+    Widget? child;
     if (ready) {
-      child = Text('全文已下载至本地，可阅读全部章节',
+      child = Text('全文已下载至本地，可离线阅读',
           textAlign: TextAlign.center, style: hintStyle);
     } else if (downloadStatus == 'pending' || downloadStatus == 'running') {
       child = Row(
@@ -385,7 +378,7 @@ class _DownloadFooter extends StatelessWidget {
               child: CircularProgressIndicator(strokeWidth: 1.6)),
           const SizedBox(width: 8),
           Flexible(
-            child: Text('正在自动下载整本，完成后解锁全部章节',
+            child: Text('正在自动下载整本，完成后可离线阅读',
                 textAlign: TextAlign.center, style: hintStyle),
           ),
         ],
@@ -393,36 +386,9 @@ class _DownloadFooter extends StatelessWidget {
     } else if (downloadStatus == 'done') {
       child = Text('下载完成，正在整理入库…',
           textAlign: TextAlign.center, style: hintStyle);
-    } else if (downloadStatus == 'failed') {
-      child = Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Flexible(
-            child: Text('整本下载失败，当前可在线阅读免费章节',
-                textAlign: TextAlign.center, style: hintStyle),
-          ),
-          if (onRetry != null) ...[
-            const SizedBox(width: 8),
-          ],
-          if (onRetry != null)
-            InkWell(
-              onTap: onRetry,
-              borderRadius: BorderRadius.circular(8),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 2),
-                child: Text('点击重试',
-                    style: TextStyle(
-                        fontSize: 11.5,
-                        fontWeight: FontWeight.w700,
-                        color: Theme.of(context).colorScheme.primary)),
-              ),
-            ),
-        ],
-      );
     } else {
-      // disabled / 无任务：TND 未配置
-      child = Text('服务器未配置下载服务，当前仅可在线阅读免费章节',
-          textAlign: TextAlign.center, style: hintStyle);
+      // failed / disabled / 无任务：在线读覆盖全部章节，无需提示
+      return const SizedBox.shrink();
     }
     return Padding(
       padding: const EdgeInsets.fromLTRB(22, 10, 22, 8),
@@ -431,7 +397,7 @@ class _DownloadFooter extends StatelessWidget {
           child,
           if (truncated) ...[
             const SizedBox(height: 4),
-            Text('目录较长，仅展示前 30 章，其余可在阅读器内查看',
+            Text('目录较长，仅展示部分章节，其余可在阅读器内查看',
                 textAlign: TextAlign.center, style: hintStyle),
           ],
         ],

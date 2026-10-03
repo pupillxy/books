@@ -270,15 +270,31 @@ func (c *Client) BookInfo(bookID string) (*bookInfo, error) {
 	return &out, nil
 }
 
-// ChapterContent 单章正文（txtContent 为解密后明文）
-func (c *Client) ChapterContent(bookID, chapterID string) (string, error) {
-	var out struct {
-		TxtContent string `json:"txtContent"`
+// ChapterContentsBatch 在线读正文批量获取（解密后明文，key=chapterID）。
+// 纪律：单章接口 /api/fqnovel/chapter 高频必触发设备风控，在线读一律走 batch——
+// 10/03 事故实测：逐章单章请求把有资历设备的正文通道再次打标。
+func (c *Client) ChapterContentsBatch(bookID string, itemIDs []string) (map[string]string, error) {
+	out := map[string]string{}
+	if len(itemIDs) == 0 {
+		return out, nil
 	}
-	if err := c.getJSON("/api/fqnovel/chapter/"+bookID+"/"+chapterID, &out); err != nil {
-		return "", err
+	var resp struct {
+		Chapters map[string]struct {
+			TxtContent string `json:"txtContent"`
+		} `json:"chapters"`
 	}
-	return out.TxtContent, nil
+	if err := c.postJSON("/api/fqnovel/chapters/batch", map[string]any{
+		"bookId":     bookID,
+		"chapterIds": itemIDs,
+	}, &resp); err != nil {
+		return nil, err
+	}
+	for _, id := range itemIDs {
+		if m, ok := resp.Chapters[id]; ok && strings.TrimSpace(m.TxtContent) != "" {
+			out[id] = m.TxtContent
+		}
+	}
+	return out, nil
 }
 
 // ─── 整本下载 ────────────────────────────────────────────────────────

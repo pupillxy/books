@@ -148,3 +148,14 @@ Hook 点：`com.bytedance.frameworks.baselib.network.http.NetworkParams.tryAddSe
 - server：appfeed 分区透传 cell_id/plan_id/algo_type/next_offset；
   新端点 `/api/store/appfeed/page`（AppFeedPage→FeedPage）回放翻页，生产已验证
 - tab/v 在 unidbg 侧被内容风控期间（code=110）翻页端点仍可用，二者风控相互独立
+
+## 推荐 Tab 架构定稿（同日）——彻底摆脱 tab/v
+- 实测发现 tab/v 在 AVD 设备上 110 长时间不自愈（15:20→16:40+，远超此前 ~1h 的冷却经验），
+  而同设备 cell/change 系全部正常——tab/v 是风控最敏感、行为最脆弱的端点，不值得依赖
+- **推荐页改为纯 cell/change 架构**：
+  - 推荐榜并入四榜统一机制（featured/recommend = 官方推荐榜 algo 101）
+  - 猜你喜欢瀑布流直接从 offset=0 翻 cell/change（实测 offset=0 可用：12卡7书、next_offset=12）
+  - server 端 DefaultFeedCellID 兜底，App 不带 cell_id 也能翻页
+  - tab/v / HomeFeed / appfeed 从推荐页数据链路中退役（代码保留，别的场景还能用）
+- 附带发现：AVD 设备与模拟器内真 App 同 device_id 双身份并发请求，疑似 tab/v 异常
+  标记的诱因之一（cell/change 不受影响）；抓包时注意错峰或抓完即停 App

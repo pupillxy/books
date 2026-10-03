@@ -824,10 +824,11 @@ func (h *StoreHandler) AppFeedPage(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "unidbg 服务未配置（XS_UNIDBG_URL）"})
 		return
 	}
+	// 猜你喜欢 feed cell 是服务端内容 ID，跨设备稳定（10/03 实测）；
+	// App 未携带时用默认值，整条瀑布流不依赖 tab/v 即可工作
 	cellID := c.Query("cell_id")
 	if cellID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "缺少 cell_id"})
-		return
+		cellID = unidbg.DefaultFeedCellID
 	}
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 	books, nextOffset, hasMore, err := h.UNI.FeedPage(cellID, c.DefaultQuery("plan_id", "0"), offset)

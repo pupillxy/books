@@ -29,23 +29,22 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
   static const _channels = ['推荐', '小说', '听书', '经典', '视频', '知识', '漫画', '新书'];
   String _channel = '推荐';
 
-  // ── 推荐频道：App 同源 feed ──
-  List<FeedSection> _feedSections = const [];
-  bool _feedLoading = true;
-  String? _feedError;
-
-  // ── 推荐频道：猜你喜欢瀑布流翻页（与子榜切换无关）──
-  String _feedCellId = '';
-  String _feedPlanId = '';
-  int _feedNextOffset = 0;
-  bool _feedHasMore = false;
-  bool _feedPageLoading = false;
-  List<FeedBook> _feedPageBooks = const [];
-  Timer? _feedRetryTimer;
+  // ── 推荐频道：猜你喜欢瀑布流（cell/change 翻页，全程不依赖 tab/v）──
+  List<FeedBook> _guessBooks = const [];
+  int _guessOffset = 0;
+  bool _guessHasMore = true;
+  bool _guessLoading = false;
+  String? _guessError;
+  Timer? _guessRetryTimer;
 
   // ── 推荐频道：榜单卡子榜 ──
   static const _rankTabs = ['推荐榜', '完本榜', '巅峰榜', '新书榜'];
-  static const _boardKeys = {0: '', 1: 'finished', 2: 'peak', 3: 'new'};
+  static const _boardKeys = {
+    0: 'recommend',
+    1: 'finished',
+    2: 'peak',
+    3: 'new',
+  };
   int _rankTabIdx = 0;
   final Map<String, List<LibraryBook>> _boardBooks = {};
   final Set<String> _boardLoading = {};
@@ -66,75 +65,50 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
   @override
   void initState() {
     super.initState();
-    _loadFeed();
+    _ensureBoard(_boardKeys[0]!);
+    _loadGuessPage(reset: true);
   }
 
   @override
   void dispose() {
-    _feedRetryTimer?.cancel();
+    _guessRetryTimer?.cancel();
     super.dispose();
   }
 
-  // ── feed（推荐榜数据源）────────────────────────────────────────
-  Future<void> _loadFeed() async {
+  // ── 猜你喜欢瀑布流（官方 cell/change 翻页；offset 由上游 next_offset 驱动）──
+  Future<void> _loadGuessPage({bool reset = false}) async {
+    if (_guessLoading) return;
+    if (!reset && !_guessHasMore) return;
     setState(() {
-      _feedLoading = true;
-      _feedError = null;
+      _guessLoading = true;
+      if (reset) {
+        _guessBooks = const [];
+        _guessOffset = 0;
+        _guessHasMore = true;
+      }
+      _guessError = null;
     });
     try {
-      final secs = await _api.storeAppFeed();
+      final r = await _api.storeAppFeedPage(
+          cellId: '', planId: '', offset: reset ? 0 : _guessOffset);
       if (!mounted) return;
       setState(() {
-        _feedSections = secs;
-        _feedLoading = false;
-        // 取瀑布流分页游标（猜你喜欢分区下发）
-        final paginatable = secs.where((s) => s.paginatable).toList();
-        _feedCellId = paginatable.isNotEmpty ? paginatable.first.cellId : '';
-        _feedPlanId = paginatable.isNotEmpty ? paginatable.first.planId : '';
-        _feedNextOffset = paginatable.isNotEmpty ? paginatable.first.nextOffset : 0;
-        _feedHasMore = _feedCellId.isNotEmpty;
-        _feedPageBooks = const [];
+        _guessBooks = reset ? r.books : [..._guessBooks, ...r.books];
+        _guessOffset = r.nextOffset;
+        _guessHasMore = r.hasMore;
+        _guessLoading = false;
       });
     } on ApiException catch (e) {
       if (!mounted) return;
       setState(() {
-        _feedLoading = false;
-        _feedError = e.message;
-        _feedHasMore = false;
-        _feedCellId = '';
-        _feedPageBooks = const [];
+        _guessLoading = false;
+        _guessError = e.message;
       });
-      // 推荐榜数据源（tab/v）不可用时自动落到完本榜，保持页面可用；
-      // 推荐榜可手动切回，原位重试
-      if (_rankTabIdx == 0) {
-        setState(() => _rankTabIdx = 1);
-        _ensureBoard(_boardKeys[1]!);
-      }
-      // 静默自动重试（server 有 60s 负缓存，不会打爆上游），恢复后页面自动回填
-      _feedRetryTimer?.cancel();
-      _feedRetryTimer = Timer(const Duration(seconds: 90), () {
-        if (mounted && _feedError != null) _loadFeed();
+      // 静默自动重试（server 负缓存兜底），恢复后自动回填
+      _guessRetryTimer?.cancel();
+      _guessRetryTimer = Timer(const Duration(seconds: 90), () {
+        if (mounted && _guessError != null) _loadGuessPage(reset: reset);
       });
-    }
-  }
-
-  // ── 猜你喜欢瀑布流翻页（滚动近底部自动触发）──────────────────────
-  Future<void> _loadFeedPage() async {
-    if (_feedPageLoading || !_feedHasMore || _feedCellId.isEmpty) return;
-    setState(() => _feedPageLoading = true);
-    try {
-      final r = await _api.storeAppFeedPage(
-          cellId: _feedCellId, planId: _feedPlanId, offset: _feedNextOffset);
-      if (!mounted) return;
-      setState(() {
-        _feedPageBooks = [..._feedPageBooks, ...r.books];
-        _feedNextOffset = r.nextOffset;
-        _feedHasMore = r.hasMore;
-        _feedPageLoading = false;
-      });
-    } on ApiException {
-      if (!mounted) return;
-      setState(() => _feedPageLoading = false);
     }
   }
 
@@ -212,7 +186,7 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
         await _loadRankGroups();
       }
     } else {
-      await _loadFeed();
+      await _loadGuessPage(reset: true);
     }
   }
 
@@ -342,7 +316,7 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
   Widget _recBody(BuildContext context) {
     // feed 拉取失败不再整页报错：完本/巅峰/新书榜与瀑布流重试照常可用，
     // 推荐榜和瀑布流各自在原位显示局部重试（server 风控自愈后点重试即恢复）
-    if (_feedLoading && _rankTabIdx == 0 && _feedSections.isEmpty) {
+    if (_guessLoading && _guessBooks.isEmpty && _guessError == null) {
       return _buildSkeleton(context);
     }
 
@@ -351,7 +325,7 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
         // 滚动近底部自动加载猜你喜欢瀑布流下一页（官方同构）
         if (n.metrics.axis == Axis.vertical &&
             n.metrics.pixels >= n.metrics.maxScrollExtent - 800) {
-          _loadFeedPage();
+          _loadGuessPage();
         }
         return false;
       },
@@ -432,23 +406,6 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
 
   // ── 子榜数据 ────────────────────────────────────────────────────
   List<_RankEntry> get _rankEntries {
-    if (_rankTabIdx == 0) {
-      // 推荐榜：App 同源 feed 排行榜
-      for (final sec in _feedSections) {
-        if (sec.title.contains('榜')) {
-          return sec.books
-              .map((b) => _RankEntry(
-                  id: b.id,
-                  title: b.title,
-                  author: b.author,
-                  cover: b.cover,
-                  metric: b.rankScore.isNotEmpty ? b.rankScore : b.readCount,
-                  finished: b.finished))
-              .toList();
-        }
-      }
-      return const [];
-    }
     final key = _boardKeys[_rankTabIdx]!;
     return (_boardBooks[key] ?? const <LibraryBook>[])
         .map((b) => _RankEntry(
@@ -461,13 +418,9 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
         .toList();
   }
 
-  bool get _rankTabLoading {
-    if (_rankTabIdx == 0) return _feedLoading;
-    return _boardLoading.contains(_boardKeys[_rankTabIdx]!);
-  }
+  bool get _rankTabLoading => _boardLoading.contains(_boardKeys[_rankTabIdx]!);
 
   String? get _rankTabError {
-    if (_rankTabIdx == 0) return _feedError;
     final k = _boardKeys[_rankTabIdx]!;
     return _boardLoading.contains(k) ? null : _boardErrors[k];
   }
@@ -507,26 +460,10 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
       return Padding(
         padding: const EdgeInsets.symmetric(vertical: 14),
         child: (err != null)
-            ? (_rankTabIdx == 0)
-                ? Row(children: [
-                    Icon(Icons.cloud_off_rounded,
-                        size: 16, color: Theme.of(context).colorScheme.outline),
-                    const SizedBox(width: 8),
-                    Expanded(
-                        child: Text('推荐榜暂时不可用，稍后会自动恢复',
-                            style: TextStyle(
-                                fontSize: 12.5,
-                                color:
-                                    Theme.of(context).colorScheme.outline))),
-                    TextButton(
-                        onPressed: _loadFeed,
-                        child:
-                            const Text('重试', style: TextStyle(fontSize: 12.5))),
-                  ])
-                : ErrorRetry(message: err, onRetry: () {
-                    _ensureBoard(_boardKeys[_rankTabIdx]!);
-                    setState(() {});
-                  })
+            ? ErrorRetry(message: err, onRetry: () {
+                _ensureBoard(_boardKeys[_rankTabIdx]!);
+                setState(() {});
+              })
             : const EmptyView(
                 icon: Icons.leaderboard_rounded, title: '该榜单暂无内容'),
       );
@@ -555,16 +492,16 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
     );
   }
 
-  // ── 推荐频道：榜单卡下方的独立瀑布流（App 同源 feed 分区）────────
-  // 与子榜切换完全解耦：切 完本榜/巅峰榜 只刷卡片，此区域保持不变（官方同构）。
+  // ── 推荐频道：榜单卡下方的「猜你喜欢」瀑布流 ─────────────────────
+  // 数据走 cell/change 翻页（offset 由上游 next_offset 驱动），与 tab/v 和子榜切换零关联。
   Widget _buildRecFeed(BuildContext context) {
-    if (_feedSections.isEmpty) {
-      if (_feedLoading) {
+    if (_guessBooks.isEmpty) {
+      if (_guessLoading) {
         return const Padding(
             padding: EdgeInsets.all(18),
             child: Center(child: CircularProgressIndicator(strokeWidth: 2)));
       }
-      if (_feedError != null) {
+      if (_guessError != null) {
         return Padding(
             padding: const EdgeInsets.fromLTRB(14, 20, 14, 0),
             child: Row(children: [
@@ -572,79 +509,44 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
                   size: 16, color: Theme.of(context).colorScheme.outline),
               const SizedBox(width: 8),
               Expanded(
-                  child: Text('推荐流暂时不可用，稍后会自动恢复',
+                  child: Text('猜你喜欢暂时不可用，稍后会自动恢复',
                       style: TextStyle(
                           fontSize: 12.5,
                           color: Theme.of(context).colorScheme.outline))),
               TextButton(
-                  onPressed: _loadFeed,
+                  onPressed: () => _loadGuessPage(reset: true),
                   child: const Text('重试', style: TextStyle(fontSize: 12.5))),
             ]));
       }
       return const SizedBox.shrink();
     }
-    final ranked =
-        _feedSections.where((s) => s.title.contains('榜')).toList();
-    final feedSecs =
-        _feedSections.where((s) => !s.title.contains('榜')).toList();
-    // 兜底：上游只下发榜单分区时，把推荐榜第 9 名起固定挂在此处
-    //（锚定推荐榜本身，切子榜不影响）
-    final sections = feedSecs.isNotEmpty
-        ? feedSecs
-        : (ranked.isNotEmpty
-            ? [
-                FeedSection(
-                    title: ranked.first.title,
-                    subtitle: ranked.first.subtitle,
-                    books: ranked.first.books.skip(8).toList())
-              ]
-            : const <FeedSection>[]);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        for (final sec in sections)
-          if (sec.books.isNotEmpty || sec.paginatable) ...[
-            Padding(
-              padding: const EdgeInsets.fromLTRB(14, 18, 14, 4),
-              child: Text(sec.title,
-                  style: TextStyle(
-                      fontFamily: MoStyle.titleFont,
-                      fontSize: 17,
-                      fontWeight: FontWeight.w800,
-                      color: MoStyle.strongOf(context))),
-            ),
-            for (var i = 0; i < sec.books.length; i++)
-              _FeedTile(
-                  title: sec.books[i].title,
-                  author: sec.books[i].author,
-                  cover: sec.books[i].cover,
-                  metric: sec.books[i].rankScore.isNotEmpty
-                      ? sec.books[i].rankScore
-                      : sec.books[i].readCount,
-                  finished: sec.books[i].finished,
-                  onTap: () =>
-                      _openDetail(sec.books[i].id, sec.books[i].title)),
-            if (sec.paginatable)
-              for (var i = 0; i < _feedPageBooks.length; i++)
-                _FeedTile(
-                    title: _feedPageBooks[i].title,
-                    author: _feedPageBooks[i].author,
-                    cover: _feedPageBooks[i].cover,
-                    metric: _feedPageBooks[i].rankScore.isNotEmpty
-                        ? _feedPageBooks[i].rankScore
-                        : _feedPageBooks[i].readCount,
-                    finished: _feedPageBooks[i].finished,
-                    onTap: () => _openDetail(
-                        _feedPageBooks[i].id, _feedPageBooks[i].title)),
-          ],
-        if (_feedHasMore)
-          SizedBox(
-            height: 52,
-            child: Center(
-              child: _feedPageLoading
-                  ? const CircularProgressIndicator(strokeWidth: 2)
-                  : const SizedBox.shrink(),
-            ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(14, 18, 14, 4),
+          child: Text('猜你喜欢',
+              style: TextStyle(
+                  fontFamily: MoStyle.titleFont,
+                  fontSize: 17,
+                  fontWeight: FontWeight.w800,
+                  color: MoStyle.strongOf(context))),
+        ),
+        for (var i = 0; i < _guessBooks.length; i++)
+          _FeedTile(
+              title: _guessBooks[i].title,
+              author: _guessBooks[i].author,
+              cover: _guessBooks[i].cover,
+              metric: _guessBooks[i].rankScore.isNotEmpty
+                  ? _guessBooks[i].rankScore
+                  : _guessBooks[i].readCount,
+              finished: _guessBooks[i].finished,
+              onTap: () =>
+                  _openDetail(_guessBooks[i].id, _guessBooks[i].title)),
+        if (_guessLoading)
+          const Padding(
+            padding: EdgeInsets.all(14),
+            child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
           ),
       ],
     );

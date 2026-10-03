@@ -655,6 +655,9 @@ func parseCellViewBooks(data json.RawMessage) ([]FeedBook, error) {
 	return out, nil
 }
 
+// DefaultFeedCellID 推荐频道「猜你喜欢」feed cell 的服务端内容 ID（跨设备稳定）
+const DefaultFeedCellID = "7011478717935386631"
+
 // FeedPage 猜你喜欢瀑布流翻页（10/03 抓包实测）：cell/change/v，algo_type=167、tab_type=2、
 // limit=10；offset 由上游 next_offset 驱动，起点 = tab/v 首屏内嵌卡片数（通常 12）。
 // 视频卡（漫剧等）不含 book_data，被过滤后 books 可能少于卡片数，属正常。

@@ -74,6 +74,9 @@
 - **IP 级限流**：换设备也没用、连搜索都 code=-1 = IP 被限。冷却几十分钟自愈，不要慌。
 - 限速纪律：批量正文 3s/批（每批 20 章）；测试时克制，PC 与 NAS 共用同一公网 IP。
 - 设备信息在 `application.yml` 的 `fq.api.device`（当前 AVD 设备，见 `capture_xiaoshuo_1003/FINDINGS.md`）。
+- **身份一致性铁律（10/03 定案）**：version_code/version_name/UA 必须与设备注册方一致
+  （AVD 设备=国内 73733 → 全套 73733 身份）。错配（68132 冒充 73733 设备）会让
+  正文/tab/v 在一小时内必被标记；当前配置已全套 73733，勿改回 68132。
   签名与 URL 绑定且校验设备一致性——**URL 里的 device_id/iid/cdid 必须与 unidbg 配置一致**，
   否则 native 直接崩（报「获取结果指针失败」）。
 - 签名接口 `/api/fq-signature/*` 对外可用性差（需完整 headers map + 完整参数 URL 才不崩），

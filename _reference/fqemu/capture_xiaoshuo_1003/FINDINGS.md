@@ -159,3 +159,14 @@ Hook 点：`com.bytedance.frameworks.baselib.network.http.NetworkParams.tryAddSe
   - tab/v / HomeFeed / appfeed 从推荐页数据链路中退役（代码保留，别的场景还能用）
 - 附带发现：AVD 设备与模拟器内真 App 同 device_id 双身份并发请求，疑似 tab/v 异常
   标记的诱因之一（cell/change 不受影响）；抓包时注意错峰或抓完即停 App
+
+## ⭐ 根因定案：身份错配（同日晚）——必须全套冒充设备注册方
+- AVD 设备（国内 novelapp 73733 注册）+ unidbg 68132 海外版身份（version_code/UA/SO），
+  短暂可用后正文/ tab/v 必被标记（110 / 响应格式异常）——当天两次事故均为此因
+- **改用 73733 全套身份（version_code=73733 / version_name=7.3.7.33 / UA com.dragon.read/73733），
+  设备参数不变，全部端点立即恢复**：正文批量 code=0、tab/v code=0、瀑布流翻页正常
+- 含义：上游风控校验「设备注册身份 vs 请求身份」一致性；unidbg 的 68132 SO 能为
+  73733 参数生成有效签名（SO 只签 URL+headers，不校验版本号语义）
+- 生产 fq-unidbg 配置已切 73733 身份（备份 .bak2），VM 端到端实测：
+  装 APK → 登录 → 书城 → 目录跳章（第6章/第326章深章按需）全部正常
+- 在线读代码层同日改为 batch-only（ChapterContentsBatch，当前章+下一章合并一请求）

@@ -6,12 +6,13 @@ import '../core/mo_theme.dart';
 import '../core/session.dart';
 import '../models.dart';
 import 'store_book_detail_page.dart';
+import 'store_rank_page.dart';
 import 'store_search_page.dart';
 import 'widgets.dart';
 
-/// 番茄书城：UI 复刻番茄 App 书城（搜索行 + 频道行 + 频道内容）。
-/// 「推荐」频道 = App 同源 feed（实时热度排行）；「小说」频道 = 官方分类榜单；
-/// 正文按需回源（读到哪章拉哪章并缓存），整本可离线缓存。
+/// 番茄书城：UI 复刻番茄 App 书城。
+/// 「推荐」频道 = App 同源 feed（实时热度排行）+ 官方近似分榜；
+/// 「小说」频道 = 官方分类榜单；正文按需回源，可整本离线缓存。
 class FanqiePage extends ConsumerStatefulWidget {
   const FanqiePage({super.key});
 
@@ -31,6 +32,14 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
   bool _feedLoading = true;
   String? _feedError;
 
+  // ── 推荐频道：榜单卡子榜 ──
+  static const _rankTabs = ['推荐榜', '完本榜', '巅峰榜', '新书榜'];
+  static const _boardKeys = {0: '', 1: 'finished', 2: 'peak', 3: 'new'};
+  int _rankTabIdx = 0;
+  final Map<String, List<LibraryBook>> _boardBooks = {};
+  final Set<String> _boardLoading = {};
+  final Map<String, String?> _boardErrors = {};
+
   // ── 小说频道：官方分类榜单 ──
   List<RankGroup> _rankGroups = const [];
   bool _ranksLoading = false;
@@ -49,7 +58,7 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
     _loadFeed();
   }
 
-  // ── feed（推荐频道）────────────────────────────────────────────
+  // ── feed（推荐榜数据源）────────────────────────────────────────
   Future<void> _loadFeed() async {
     setState(() {
       _feedLoading = true;
@@ -119,8 +128,8 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
       _rankBooksError = null;
     });
     try {
-      final books = await _api.storeRankBooks(_selRankId,
-          offset: _rankOffset, limit: 15);
+      final books =
+          await _api.storeRankBooks(_selRankId, offset: _rankOffset, limit: 15);
       if (!mounted) return;
       setState(() {
         _rankBooks = reset ? books : [..._rankBooks, ...books];
@@ -138,14 +147,14 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
   }
 
   Future<void> _refresh() async {
-    if (_channel == 'rec') {
-      await _loadFeed();
-    } else {
+    if (_channel == '小说') {
       if (_rankBooks.isNotEmpty || _selRankId.isNotEmpty) {
         await _loadRankBooks(reset: true);
       } else {
         await _loadRankGroups();
       }
+    } else {
+      await _loadFeed();
     }
   }
 
@@ -179,28 +188,35 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
   Widget _buildSearchRow(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(14, 10, 14, 4),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(10),
-        onTap: () => Navigator.of(context)
-            .push(MaterialPageRoute(builder: (_) => const StoreSearchPage())),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-          decoration: BoxDecoration(
-            color: Theme.of(context).colorScheme.surfaceContainerHighest,
-            borderRadius: BorderRadius.circular(10),
+      child: Row(
+        children: [
+          Expanded(
+            child: InkWell(
+              borderRadius: BorderRadius.circular(10),
+              onTap: () => Navigator.of(context)
+                  .push(MaterialPageRoute(builder: (_) => const StoreSearchPage())),
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.search_rounded,
+                        size: 19, color: Theme.of(context).colorScheme.outline),
+                    const SizedBox(width: 8),
+                    Text('搜书名 / 搜作者',
+                        style: TextStyle(
+                            color: Theme.of(context).colorScheme.outline,
+                            fontSize: 14)),
+                  ],
+                ),
+              ),
+            ),
           ),
-          child: Row(
-            children: [
-              Icon(Icons.search_rounded,
-                  size: 19, color: Theme.of(context).colorScheme.outline),
-              const SizedBox(width: 8),
-              Text('搜书名 / 搜作者',
-                  style: TextStyle(
-                      color: Theme.of(context).colorScheme.outline,
-                      fontSize: 14)),
-            ],
-          ),
-        ),
+        ],
       ),
     );
   }
@@ -264,172 +280,218 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
     );
   }
 
-  // ── 推荐频道（App 同源 feed）─────────────────────────────────────
+  // ── 推荐频道（榜单卡：子榜切换 + 两列网格）────────────────────────
   Widget _recBody(BuildContext context) {
-    if (_feedLoading) return _buildSkeleton(context);
-    if (_feedError != null) {
-      return ListView(
-          physics: const AlwaysScrollableScrollPhysics(),
-          children: [
-            ErrorRetry(message: _feedError!, onRetry: _loadFeed)
-          ]);
-    }
-    if (_feedSections.isEmpty) {
-      return ListView(children: const [
-        EmptyView(icon: Icons.leaderboard_rounded, title: 'App feed 暂无内容')
+    if (_feedLoading && _rankTabIdx == 0) return _buildSkeleton(context);
+    if (_feedError != null && _rankTabIdx == 0) {
+      return ListView(physics: const AlwaysScrollableScrollPhysics(), children: [
+        ErrorRetry(message: _feedError!, onRetry: _loadFeed)
       ]);
     }
+
     return ListView(
       physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.only(bottom: 32),
       children: [
-        for (final sec in _feedSections) ...[
-          _sectionHeader(context, sec.title, sec.subtitle),
-          if (sec.books.length >= 3) _buildTop3(context, sec),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(14, 4, 14, 0),
-            child: Column(
-              children: [
-                for (var i = 0; i < sec.books.length; i++)
-                  _FeedTile(
-                      title: sec.books[i].title,
-                      author: sec.books[i].author,
-                      cover: sec.books[i].cover,
-                      metric: sec.books[i].rankScore.isNotEmpty
-                          ? sec.books[i].rankScore
-                          : sec.books[i].readCount,
-                      finished: sec.books[i].finished,
-                      rank: sec.books.length >= 3 ? i + 1 : null,
-                      onTap: () => _openDetail(sec.books[i].id, sec.books[i].title)),
-              ],
-            ),
+        Container(
+          margin: const EdgeInsets.symmetric(horizontal: 10),
+          padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
+          decoration: BoxDecoration(
+            color: Theme.of(context)
+                .colorScheme
+                .surfaceContainerHighest
+                .withValues(alpha: .55),
+            borderRadius: BorderRadius.circular(12),
           ),
-        ],
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // 子榜 tab 行 + 完整榜单入口
+              SizedBox(
+                height: 30,
+                child: Row(
+                  children: [
+                    for (var i = 0; i < _rankTabs.length; i++)
+                      GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: () {
+                          setState(() => _rankTabIdx = i);
+                          _ensureBoard(_boardKeys[i]!);
+                        },
+                        child: Padding(
+                          padding: const EdgeInsets.only(right: 16),
+                          child: Text(_rankTabs[i],
+                              style: TextStyle(
+                                  fontSize: _rankTabIdx == i ? 15.5 : 13.5,
+                                  fontWeight: _rankTabIdx == i
+                                      ? FontWeight.w800
+                                      : FontWeight.w500,
+                                  color: _rankTabIdx == i
+                                      ? Theme.of(context).colorScheme.onSurface
+                                      : Theme.of(context)
+                                          .colorScheme
+                                          .outline)),
+                        ),
+                      ),
+                    const Spacer(),
+                    GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () => Navigator.of(context).push(
+                          MaterialPageRoute(
+                              builder: (_) => const StoreRankPage())),
+                      child: Row(children: [
+                        Text('完整榜单',
+                            style: TextStyle(
+                                fontSize: 12,
+                                color:
+                                    Theme.of(context).colorScheme.outline)),
+                        Icon(Icons.chevron_right_rounded,
+                            size: 15,
+                            color: Theme.of(context).colorScheme.outline),
+                      ]),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 8),
+              _buildRankGrid(context),
+            ],
+          ),
+        ),
       ],
     );
   }
 
-  Widget _sectionHeader(BuildContext context, String title, String subtitle) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(14, 14, 14, 4),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.end,
+  // ── 子榜数据 ────────────────────────────────────────────────────
+  List<_RankEntry> get _rankEntries {
+    if (_rankTabIdx == 0) {
+      // 推荐榜：App 同源 feed 排行榜
+      for (final sec in _feedSections) {
+        if (sec.title.contains('榜')) {
+          return sec.books
+              .map((b) => _RankEntry(
+                  id: b.id,
+                  title: b.title,
+                  author: b.author,
+                  cover: b.cover,
+                  metric: b.rankScore.isNotEmpty ? b.rankScore : b.readCount,
+                  finished: b.finished))
+              .toList();
+        }
+      }
+      return const [];
+    }
+    final key = _boardKeys[_rankTabIdx]!;
+    return (_boardBooks[key] ?? const <LibraryBook>[])
+        .map((b) => _RankEntry(
+            id: b.id,
+            title: b.title,
+            author: b.author,
+            cover: b.cover,
+            metric: b.readCount.isNotEmpty ? b.readCount : b.wordCount,
+            finished: b.finished))
+        .toList();
+  }
+
+  bool get _rankTabLoading {
+    if (_rankTabIdx == 0) return _feedLoading;
+    return _boardLoading.contains(_boardKeys[_rankTabIdx]!);
+  }
+
+  String? get _rankTabError {
+    if (_rankTabIdx == 0) return _feedError;
+    final k = _boardKeys[_rankTabIdx]!;
+    return _boardLoading.contains(k) ? null : _boardErrors[k];
+  }
+
+  void _ensureBoard(String key) {
+    if (key.isEmpty || _boardBooks.containsKey(key) || _boardLoading.contains(key)) {
+      return;
+    }
+    _boardLoading.add(key);
+    setState(() => _boardErrors[key] = null);
+    _api.storeFeaturedBooks(key, limit: 16).then((books) {
+      if (!mounted) return;
+      setState(() {
+        _boardBooks[key] = books;
+        _boardLoading.remove(key);
+      });
+    }).catchError((e) {
+      if (!mounted) return;
+      setState(() {
+        _boardLoading.remove(key);
+        _boardErrors[key] = e is ApiException ? e.message : '$e';
+      });
+    });
+  }
+
+  Widget _buildRankGrid(BuildContext context) {
+    final entries = _rankEntries;
+    if (_rankTabLoading && entries.isEmpty) {
+      return Column(
         children: [
-          Text(title,
-              style: TextStyle(
-                  fontFamily: MoStyle.titleFont,
-                  fontSize: 17,
-                  fontWeight: FontWeight.w800,
-                  color: MoStyle.strongOf(context))),
-          if (subtitle.isNotEmpty) ...[
-            const SizedBox(width: 8),
-            Padding(
-              padding: const EdgeInsets.only(bottom: 2),
-              child: Text(subtitle,
-                  style: TextStyle(
-                      fontSize: 12,
-                      color: Theme.of(context).colorScheme.outline)),
-            ),
-          ],
+          for (var i = 0; i < 4; i++) _skCell(context),
         ],
-      ),
-    );
-  }
+      );
+    }
+    final err = _rankTabError;
+    if (entries.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 14),
+        child: (err != null)
+            ? ErrorRetry(message: err, onRetry: () {
+                if (_rankTabIdx == 0) {
+                  _loadFeed();
+                } else {
+                  _ensureBoard(_boardKeys[_rankTabIdx]!);
+                  setState(() {});
+                }
+              })
+            : const EmptyView(
+                icon: Icons.leaderboard_rounded, title: '该榜单暂无内容'),
+      );
+    }
 
-  Widget _buildTop3(BuildContext context, FeedSection sec) {
-    final top = sec.books.take(3).toList();
-    return SizedBox(
-      height: 168,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        itemCount: top.length,
-        separatorBuilder: (context, index) => const SizedBox(width: 12),
-        itemBuilder: (context, i) {
-          final b = top[i];
-          return InkWell(
-            borderRadius: BorderRadius.circular(16),
-            onTap: () => _openDetail(b.id, b.title),
-            child: Container(
-              width: 288,
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: MoStyle.softOf(context),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(
-                    color: MoStyle.strongOf(context).withValues(alpha: .18)),
-              ),
-              child: Row(
-                children: [
-                  SizedBox(
-                    width: 84,
-                    child: Stack(
-                      children: [
-                        AspectRatio(
-                            aspectRatio: 3 / 4,
-                            child: BookCover(
-                                url: b.cover.isEmpty ? null : b.cover,
-                                title: b.title,
-                                cacheWidth: 300)),
-                        Positioned(left: 0, top: 0, child: _rankBadge(i + 1)),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(sec.title,
-                            style: TextStyle(
-                                fontSize: 11,
-                                fontWeight: FontWeight.w700,
-                                color: MoStyle.strongOf(context))),
-                        const SizedBox(height: 4),
-                        Text(b.title,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                                fontFamily: MoStyle.titleFont,
-                                fontSize: 16,
-                                fontWeight: FontWeight.w700)),
-                        const SizedBox(height: 4),
-                        Text(b.author,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                                fontSize: 12,
-                                color: Theme.of(context).colorScheme.outline)),
-                        const Spacer(),
-                        Text(b.rankScore.isNotEmpty ? b.rankScore : b.readCount,
-                            style: TextStyle(
-                                fontSize: 11,
-                                color: MoStyle.strongOf(context))),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
+    final top8 = entries.take(8).toList();
+    final rest = entries.length > 8 ? entries.sublist(8) : const <_RankEntry>[];
+
+    return Column(
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+                child: Column(
+                    children: [
+                  for (var i = 0; i < 4 && i < top8.length; i++)
+                    _RankCell(book: top8[i], rank: i + 1)
+                ])),
+            Expanded(
+                child: Column(
+                    children: [
+                  for (var i = 4; i < 8 && i < top8.length; i++)
+                    _RankCell(book: top8[i], rank: i + 1)
+                ])),
+          ],
+        ),
+        if (rest.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(0, 4, 0, 0),
+            child: Column(
+              children: [
+                for (var i = 0; i < rest.length; i++)
+                  _FeedTile(
+                      title: rest[i].title,
+                      author: rest[i].author,
+                      cover: rest[i].cover,
+                      metric: rest[i].metric,
+                      finished: rest[i].finished,
+                      rank: i + 9,
+                      onTap: () => _openDetail(rest[i].id, rest[i].title)),
+              ],
             ),
-          );
-        },
-      ),
-    );
-  }
-
-  Widget _rankBadge(int n) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-      decoration: BoxDecoration(
-        color: n <= 3 ? MoStyle.primaryStrong : Colors.black54,
-        borderRadius: const BorderRadius.only(
-            topLeft: Radius.circular(10), bottomRight: Radius.circular(10)),
-      ),
-      child: Text('TOP$n',
-          style: const TextStyle(
-              color: Colors.white,
-              fontSize: 10,
-              fontWeight: FontWeight.w800)),
+          ),
+      ],
     );
   }
 
@@ -451,7 +513,6 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
       physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.only(bottom: 32),
       children: [
-        // 榜单条目 chips（当前分组的所有榜单）
         SizedBox(
           height: 40,
           child: ListView.separated(
@@ -482,7 +543,9 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
         if (_rankBooksError != null)
           Padding(
             padding: const EdgeInsets.all(14),
-            child: ErrorRetry(message: _rankBooksError!, onRetry: () => _loadRankBooks(reset: true)),
+            child: ErrorRetry(
+                message: _rankBooksError!,
+                onRetry: () => _loadRankBooks(reset: true)),
           ),
         if (_selRankName.isNotEmpty && _rankBooks.isNotEmpty)
           Padding(
@@ -504,7 +567,8 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
                   : _rankBooks[i].readCount,
               finished: _rankBooks[i].finished,
               rank: i + 1,
-              onTap: () => _openDetail(_rankBooks[i].id, _rankBooks[i].title)),
+              onTap: () =>
+                  _openDetail(_rankBooks[i].id, _rankBooks[i].title)),
         if (_rankLoading)
           const Padding(
             padding: EdgeInsets.all(14),
@@ -534,19 +598,164 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
   // ── 通用组件 ────────────────────────────────────────────────────
   Widget _buildSkeleton(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.all(14),
-      child: Column(
+      padding: const EdgeInsets.all(10),
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Theme.of(context)
+              .colorScheme
+              .surfaceContainerHighest
+              .withValues(alpha: .55),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                Expanded(
+                    child: Column(children: [
+                  for (var i = 0; i < 4; i++) _skCell(context)
+                ])),
+                Expanded(
+                    child: Column(children: [
+                  for (var i = 0; i < 4; i++) _skCell(context)
+                ])),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _skCell(BuildContext context) {
+    return Container(
+      height: 92,
+      margin: const EdgeInsets.only(bottom: 8),
+      child: Row(
         children: [
-          for (var i = 0; i < 8; i++)
-            Container(
-              height: 88,
-              margin: const EdgeInsets.only(bottom: 10),
+          Container(
+              width: 56,
               decoration: BoxDecoration(
                 color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(6),
+              )),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                    height: 14,
+                    width: double.infinity,
+                    color:
+                        Theme.of(context).colorScheme.surfaceContainerHighest),
+                const SizedBox(height: 8),
+                Container(
+                    height: 11,
+                    width: 180,
+                    color:
+                        Theme.of(context).colorScheme.surfaceContainerHighest),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── 子榜条目视图模型 ────────────────────────────────────────────────
+class _RankEntry {
+  final String id;
+  final String title;
+  final String author;
+  final String cover;
+  final String metric;
+  final bool finished;
+
+  const _RankEntry({
+    required this.id,
+    required this.title,
+    required this.author,
+    required this.cover,
+    required this.metric,
+    required this.finished,
+  });
+}
+
+// ── 榜单网格单元（番茄同款：封面 + 大名次 + 两行书名 + 底行信息）─────
+class _RankCell extends StatelessWidget {
+  const _RankCell({required this.book, required this.rank});
+
+  final _RankEntry book;
+  final int rank;
+
+  @override
+  Widget build(BuildContext context) {
+    final metric = book.metric;
+    final status = book.finished ? '完结' : '新书';
+    return InkWell(
+      borderRadius: BorderRadius.circular(8),
+      onTap: () => Navigator.of(context).push(MaterialPageRoute(
+          builder: (_) =>
+              StoreBookDetailPage(fanqieId: book.id, title: book.title))),
+      child: SizedBox(
+        height: 96,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+              width: 54,
+              child: AspectRatio(
+                  aspectRatio: 3 / 4,
+                  child: BookCover(
+                      url: book.cover.isEmpty ? null : book.cover,
+                      title: book.title,
+                      cacheWidth: 200)),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('$rank',
+                          style: TextStyle(
+                              fontFamily: MoStyle.titleFont,
+                              fontSize: 19,
+                              height: 1.0,
+                              fontWeight: FontWeight.w900,
+                              color: Theme.of(context).colorScheme.onSurface)),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(book.title,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                fontSize: 13.5,
+                                height: 1.25,
+                                fontWeight: FontWeight.w600)),
+                      ),
+                    ],
+                  ),
+                  const Spacer(),
+                  Text(
+                    metric.isNotEmpty ? metric : '$status · ${book.author}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                        fontSize: 11,
+                        color: Theme.of(context).colorScheme.outline),
+                  ),
+                  const SizedBox(height: 4),
+                ],
               ),
             ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -632,10 +841,14 @@ class _FeedTile extends StatelessWidget {
                                 fontSize: 12,
                                 color:
                                     Theme.of(context).colorScheme.outline)),
-                        Text(metric,
-                            style: TextStyle(
-                                fontSize: 12,
-                                color: MoStyle.strongOf(context))),
+                        Flexible(
+                          child: Text(metric,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                  fontSize: 12,
+                                  color: MoStyle.strongOf(context))),
+                        ),
                       ],
                     ],
                   ),

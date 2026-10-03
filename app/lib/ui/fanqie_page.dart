@@ -70,6 +70,7 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
   bool _novelLoading = false;
   String? _novelError;
   Timer? _novelRetryTimer;
+  int _novelReqGen = 0; // 请求代数：切筛选/刷新可打断在途请求，旧响应作废
 
   // ── 漫画频道：官方漫画瀑布流（tab_type=9）──
   List<ComicBook> _comicBooks = const [];
@@ -78,6 +79,7 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
   bool _comicLoading = false;
   String? _comicError;
   Timer? _comicRetryTimer;
+  int _comicReqGen = 0;
 
   @override
   void initState() {
@@ -141,9 +143,10 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
   }
 
   Future<void> _loadNovelPage({bool reset = false}) async {
-    if (_novelLoading) return;
-    if (!reset && !_novelHasMore) return;
+    // 翻页请求受 loading/hasMore 守卫；筛选与刷新（reset）随时可打断在途请求
+    if (!reset && (_novelLoading || !_novelHasMore)) return;
     _ensureNovelFilters();
+    final gen = ++_novelReqGen;
     setState(() {
       _novelLoading = true;
       if (reset) {
@@ -157,7 +160,7 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
       final r = await _api.storeNovelFeed(
           filters: _novelFilters.toList().join(','),
           offset: reset ? 0 : _novelOffset);
-      if (!mounted) return;
+      if (!mounted || gen != _novelReqGen) return;
       setState(() {
         _novelBooks = reset ? r.books : [..._novelBooks, ...r.books];
         _novelOffset = r.nextOffset;
@@ -165,7 +168,7 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
         _novelLoading = false;
       });
     } on ApiException catch (e) {
-      if (!mounted) return;
+      if (!mounted || gen != _novelReqGen) return;
       setState(() {
         _novelLoading = false;
         _novelError = e.message;
@@ -193,8 +196,8 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
 
   // ── 漫画频道：官方漫画瀑布流 ─────────────────────────────────────
   Future<void> _loadComicPage({bool reset = false}) async {
-    if (_comicLoading) return;
-    if (!reset && !_comicHasMore) return;
+    if (!reset && (_comicLoading || !_comicHasMore)) return;
+    final gen = ++_comicReqGen;
     setState(() {
       _comicLoading = true;
       if (reset) {
@@ -206,7 +209,7 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
     });
     try {
       final r = await _api.storeComicFeed(offset: reset ? 0 : _comicOffset);
-      if (!mounted) return;
+      if (!mounted || gen != _comicReqGen) return;
       setState(() {
         _comicBooks = reset ? r.items : [..._comicBooks, ...r.items];
         _comicOffset = r.nextOffset;
@@ -214,7 +217,7 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
         _comicLoading = false;
       });
     } on ApiException catch (e) {
-      if (!mounted) return;
+      if (!mounted || gen != _comicReqGen) return;
       setState(() {
         _comicLoading = false;
         _comicError = e.message;

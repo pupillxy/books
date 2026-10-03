@@ -228,12 +228,14 @@ func (c *Client) postJSONOnce(path string, req any, out any) error {
 
 // ─── 数据接口 ────────────────────────────────────────────────────────
 
-// Search App 协议搜索（比网页搜索全，且无网页端风控限流）
-func (c *Client) Search(query string, count int) ([]Book, error) {
+// Search App 协议搜索（比网页搜索全，且无网页端风控限流）。
+// offset 分页与官方 App 一致（search/tab/v，passback=offset，Java 端内部组装）。
+func (c *Client) Search(query string, count, offset int) ([]Book, error) {
 	var out struct {
 		Books []searchBook `json:"books"`
 	}
-	err := c.getJSON(fmt.Sprintf("/api/fqsearch/books?query=%s&count=%d&tabType=1", url.QueryEscape(query), count), &out)
+	err := c.getJSON(fmt.Sprintf("/api/fqsearch/books?query=%s&count=%d&offset=%d&tabType=1",
+		url.QueryEscape(query), count, offset), &out)
 	if err != nil {
 		return nil, err
 	}
@@ -386,38 +388,11 @@ type FeedSection struct {
 // 与番茄 App 同源——真实排行榜、个性化推荐流。
 func (c *Client) HomeFeed() ([]FeedSection, error) {
 	query := randomizeSessionParams(bookmallBusinessQuery)
-	body, err := c.postRaw("/api/fqapp/fetch", map[string]string{
-		"path":  "/reading/bookapi/bookmall/tab/v",
-		"query": query,
-	})
+	data, err := c.fetchApp("/reading/bookapi/bookmall/tab/v", query)
 	if err != nil {
 		return nil, err
 	}
-	var env struct {
-		Code    int             `json:"code"`
-		Message string          `json:"message"`
-		Data    json.RawMessage `json:"data"`
-	}
-	if err := json.Unmarshal(body, &env); err != nil {
-		return nil, fmt.Errorf("feed 响应解析: %w", err)
-	}
-	if env.Code != 0 {
-		// 设备风控（ILLEGAL_ACCESS）→ 自动轮换设备后重试一次
-		if isRiskControl(env.Code, env.Message) {
-			if os.Getenv("XS_UNIDBG_ROTATE") != "1" {
-				return nil, fmt.Errorf("feed 上游 code=%d %s（设备风控，冷却后自愈；XS_UNIDBG_ROTATE=1 可开启自动轮换）",
-					env.Code, env.Message)
-			}
-			rerr := c.recoverDevice()
-			if rerr == nil {
-				return c.HomeFeed()
-			}
-			return nil, fmt.Errorf("feed 上游 code=%d %s（设备已自动轮换但仍失败: %v）",
-				env.Code, env.Message, rerr)
-		}
-		return nil, fmt.Errorf("feed 上游 code=%d %s", env.Code, env.Message)
-	}
-	var data struct {
+	var parsed struct {
 		TabItem []struct {
 			Title    string `json:"title"`
 			CellData []struct {
@@ -442,7 +417,7 @@ func (c *Client) HomeFeed() ([]FeedSection, error) {
 			} `json:"cell_data"`
 		} `json:"tab_item"`
 	}
-	if err := json.Unmarshal(env.Data, &data); err != nil {
+	if err := json.Unmarshal(data, &parsed); err != nil {
 		return nil, fmt.Errorf("feed 结构解析: %w", err)
 	}
 
@@ -470,16 +445,16 @@ func (c *Client) HomeFeed() ([]FeedSection, error) {
 			} `json:"cell_data"`
 		} `json:"cell_data"`
 	}
-	for i := range data.TabItem {
-		if data.TabItem[i].Title == "推荐" && len(data.TabItem[i].CellData) > 0 {
-			tab = &data.TabItem[i]
+	for i := range parsed.TabItem {
+		if parsed.TabItem[i].Title == "推荐" && len(parsed.TabItem[i].CellData) > 0 {
+			tab = &parsed.TabItem[i]
 			break
 		}
 	}
 	if tab == nil {
-		for i := range data.TabItem {
-			if len(data.TabItem[i].CellData) > 0 {
-				tab = &data.TabItem[i]
+		for i := range parsed.TabItem {
+			if len(parsed.TabItem[i].CellData) > 0 {
+				tab = &parsed.TabItem[i]
 				break
 			}
 		}
@@ -517,6 +492,148 @@ func (c *Client) HomeFeed() ([]FeedSection, error) {
 		}
 	}
 	return sections, nil
+}
+
+// ─── App 协议榜单（2026-10-03 官方 App 抓包对齐，档案 _reference/fqemu/capture_xiaoshuo_1003）───
+
+// fetchApp 通用 App 协议回放：通过 /api/fqapp/fetch 代签代发任意 bookapi 端点。
+// query 只带业务参数——设备参数（iid/device_id/cdid 等）由 Java 服务注入，
+// 调用方带同名参数会覆盖设备配置导致签名失效。设备风控时与 HomeFeed 同策略自愈。
+func (c *Client) fetchApp(path, query string) (json.RawMessage, error) {
+	body, err := c.postRaw("/api/fqapp/fetch", map[string]string{"path": path, "query": query})
+	if err != nil {
+		return nil, err
+	}
+	var env struct {
+		Code    int             `json:"code"`
+		Message string          `json:"message"`
+		Data    json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		return nil, fmt.Errorf("app fetch %s 响应解析: %w", path, err)
+	}
+	if env.Code != 0 {
+		if isRiskControl(env.Code, env.Message) {
+			if os.Getenv("XS_UNIDBG_ROTATE") != "1" {
+				return nil, fmt.Errorf("app fetch %s 上游 code=%d %s（设备风控，冷却后自愈）", path, env.Code, env.Message)
+			}
+			if rerr := c.recoverDevice(); rerr == nil {
+				return c.fetchApp(path, query)
+			}
+		}
+		return nil, fmt.Errorf("app fetch %s 上游 code=%d %s", path, env.Code, env.Message)
+	}
+	return env.Data, nil
+}
+
+// AppRank 官方榜单（algo_type 即官方协议榜单 ID；main_algo_type 响应映射 2026-10-03 实测）
+type AppRank struct {
+	Algo int
+	Name string
+}
+
+// AppRanks 完整榜单页左栏全量（web_page_key=common-rank-list-v1）
+var AppRanks = []AppRank{
+	{101, "推荐榜"}, {100, "完本榜"}, {108, "新书榜"}, {207, "书友榜"}, {109, "追更榜"},
+	{102, "黑马榜"}, {200, "巅峰榜"}, {208, "书荒榜"}, {188, "礼物榜"}, {111, "阅读榜"}, {205, "作者榜"},
+}
+
+// AppRankByAlgo 按 algo_type 查榜单名，未知返回空
+func AppRankByAlgo(algo int) string {
+	for _, r := range AppRanks {
+		if r.Algo == algo {
+			return r.Name
+		}
+	}
+	return ""
+}
+
+// rankPageQuery 完整榜单整页业务参数模板（cell/change/v1，web_page_key=common-rank-list-v1）。
+// 一次返回 top30（offset 无效，has_more 恒 false）；algo_type/gender_list_type 按需替换。
+// gender_list_type: 1=男生榜 0=女生榜。cell_id 为榜单卡 cell 实例 ID（服务端内容 ID，跨设备稳定）。
+const rankPageQuery = `cell_gender=2&main_algo_type=101%2C100%2C108%2C207%2C109%2C102%2C200%2C208%2C188%2C111%2C205&book_type=0&genre_tab_list=2%2C3%2C4%2C5%2C6%2C7&rank_sub_info_id=2&offset=0&genre_tab=2&gender_list_type=1&change_type=1&web_page_key=common-rank-list-v1&algo_type=100&main_algo_name=%E6%8E%A8%E8%8D%90%E6%A6%9C%2C%E5%AE%8C%E6%9C%AC%E6%A6%9C%2C%E6%96%B0%E4%B9%A6%E6%A6%9C%2C%E4%B9%A6%E5%8F%8B%E6%A6%9C%2C%E8%BF%BD%E6%9B%B4%E6%A6%9C%2C%E9%BB%91%E9%A9%AC%E6%A6%9C%2C%E5%B7%85%E5%B3%B0%E6%A6%9C%2C%E4%B9%A6%E8%8D%92%E6%A6%9C%2C%E7%A4%BC%E7%89%A9%E6%A6%9C%2C%E9%98%85%E8%AF%BB%E6%A6%9C%2C%E4%BD%9C%E8%80%85%E6%A6%9C&list_type=daily&web_page_version_code=1&tab_type=2&list_gender=1&limit=12&rank_list_style_type=1&genre_tab_name_list=%E5%B0%8F%E8%AF%B4%2C%E5%87%BA%E7%89%88%2C%E7%9F%AD%E5%89%A7%2C%E6%BC%AB%E5%89%A7%2C%E5%90%AC%E4%B9%A6%2C%E7%9F%AD%E7%AF%87&support_gender_list=true&cell_id=7098235271900037133&rank_sub_info_type=0&client_req_type=4&normal_session_cnt_in_day=7&gender=2&cold_start_session_cnt_in_day=3&sys_mini_window=1&app_mini_window=0&normal_session_id=366c223e-728b-45bd-b44c-31d570cc59d5%231&har_status=0&cold_start_session_id=9252d33c-edd5-4be4-8cec-9ab7af7c47c4&cold_start_session_cnt_in_life=21&charging=0&normal_session_cnt_in_life=404&is_power_save_mode=0&app_dark_mode=0&screen_brightness=102&battery_pct=100&down_speed=4300&sys_dark_mode=0&font_scale=100&network_type=1&current_volume=33&recommend_extra=eyJyZWNlbnRfZGlzbGlrZV9naWQiOltdLCJzZXNzaW9uX2FwcF9zdGF5X3RpbWUiOjB9%0A`
+
+// RankPageBooks 拉取一份完整榜单（官方 App 协议）。genderList: "1"=男生榜 "0"=女生榜。
+// 返回整批（约 30 本），分页由调用方切片。
+func (c *Client) RankPageBooks(algo int, genderList string) ([]FeedBook, error) {
+	q := replaceParam(rankPageQuery, "algo_type", strconv.Itoa(algo))
+	if genderList == "0" {
+		q = replaceParam(q, "gender_list_type", "0")
+	}
+	q = randomizeSessionParams(q)
+	data, err := c.fetchApp("/reading/bookapi/bookmall/cell/change/v1/", q)
+	if err != nil {
+		return nil, err
+	}
+	return parseCellViewBooks(data)
+}
+
+// mallCell bookmall cell/change 响应里的 cell 节点（可嵌套）
+type mallCell struct {
+	CellName string     `json:"cell_name"`
+	BookData []mallBook `json:"book_data"`
+	CellData []mallCell `json:"cell_data"`
+}
+
+// mallBook 榜单书籍条目（字段与 bookmall/tab 同名族，另有 read_cnt_text 人类可读在读数）
+type mallBook struct {
+	BookID      string `json:"book_id"`
+	BookName    string `json:"book_name"`
+	Author      string `json:"author"`
+	Abstract    string `json:"abstract"`
+	Category    string `json:"category"`
+	ThumbURL    string `json:"thumb_url"`
+	ReadCount   string `json:"read_count"`
+	ReadCntText string `json:"read_cnt_text"`
+	RankScore   string `json:"rank_score"`
+	Score       string `json:"score"`
+	Tags        string `json:"tags"`
+	SerialCount string `json:"serial_count"`
+	Creation    string `json:"creation_status"`
+}
+
+func (m mallBook) toFeedBook() FeedBook {
+	rc := m.ReadCntText
+	if rc == "" {
+		rc = m.ReadCount
+	}
+	return FeedBook{
+		BookID: m.BookID, BookName: m.BookName, Author: m.Author,
+		Abstract: m.Abstract, Category: m.Category, ThumbURL: m.ThumbURL,
+		ReadCount: rc, RankScore: m.RankScore, Score: m.Score, Tags: m.Tags,
+		SerialNum: m.SerialCount, Finished: m.Creation == "1",
+	}
+}
+
+// parseCellViewBooks 展开 cell/change 响应 data.cell_view.cell_data（含嵌套）里的全部书籍。
+// 入参为 /api/fqapp/fetch 剥壳后的 data 对象（内含 cell_view，不再有 data 包裹层）。
+func parseCellViewBooks(data json.RawMessage) ([]FeedBook, error) {
+	var env struct {
+		CellView struct {
+			CellName string     `json:"cell_name"`
+			CellData []mallCell `json:"cell_data"`
+		} `json:"cell_view"`
+	}
+	if err := json.Unmarshal(data, &env); err != nil {
+		return nil, fmt.Errorf("榜单结构解析: %w", err)
+	}
+	var out []FeedBook
+	var walk func(cells []mallCell)
+	walk = func(cells []mallCell) {
+		for _, c := range cells {
+			for _, b := range c.BookData {
+				if b.BookID != "" && b.BookName != "" {
+					out = append(out, b.toFeedBook())
+				}
+			}
+			walk(c.CellData)
+		}
+	}
+	walk(env.CellView.CellData)
+	if len(out) == 0 {
+		return nil, fmt.Errorf("榜单无书籍数据")
+	}
+	return out, nil
 }
 
 // ─── 设备风控自动恢复 ────────────────────────────────────────────────

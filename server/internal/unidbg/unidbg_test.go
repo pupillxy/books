@@ -22,7 +22,7 @@ func TestSmokeUnidbg(t *testing.T) {
 	}
 
 	// 1) 搜索（上游 IP 限流/风控时跳过，不视为代码缺陷）
-	books, err := c.Search("剑来", 3)
+	books, err := c.Search("剑来", 3, 0)
 	if err != nil {
 		t.Skipf("上游不可用（限流/风控冷却中）: %v", err)
 	}

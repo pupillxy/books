@@ -15,7 +15,7 @@ import 'widgets.dart';
 
 /// 书城首页（「墨笺」风）：搜索 + 榜单 Tab/频道切换 + 焦点轮播（当前榜 Top3）+
 /// 分类直达 + 完本精选/新书速递横向书架 + 巅峰榜速览 + 全屏三列网格（滚动加载更多）。
-/// 数据全部来自番茄网页端（书库热门近似榜单，A 方案）；官方分类榜单在「完整榜单」二级页。
+/// 榜单数据走官方 App 协议（server 经 unidbg 回放 cell/change/v1），失败退网页书库近似。
 /// 侧栏区块各自独立容错：单个加载失败仅隐藏该区块，不影响主网格。
 class StorePage extends ConsumerStatefulWidget {
   const StorePage({super.key});

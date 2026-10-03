@@ -31,6 +31,18 @@ type StoreHandler struct {
 	// 缓存未命中就会重新拉图闪烁。TTL 内返回同一份抓取结果，签名 URL 保持稳定。
 	detMu    sync.Mutex
 	detCache map[string]storeDetailCacheEntry
+
+	// App 协议榜单批缓存：完整榜单一次拉整批（约30本），App 分页请求在批内切片。
+	// key = "<algo>:<genderList>"，TTL 内复用同一批，避免 App 翻页打爆 unidbg。
+	rankMu    sync.Mutex
+	rankCache map[string]rankBatchEntry
+}
+
+const rankBatchTTL = 2 * time.Minute
+
+type rankBatchEntry struct {
+	books []unidbg.FeedBook
+	at    time.Time
 }
 
 const storeDetailCacheTTL = 5 * time.Minute
@@ -137,8 +149,19 @@ func (h *StoreHandler) cachedFanqieDetail(fid string) (*fanqie.BookDetail, []fan
 	return nil, nil, err
 }
 
-// Ranks 榜单分组
+// Ranks 榜单分组。unidbg 可用时返回官方 App 协议榜单（完整榜单页左栏全量，
+// ID 即 algo_type，RankBooks 据此走 App 协议）；否则退网页榜单分组。
 func (h *StoreHandler) Ranks(c *gin.Context) {
+	if h.UNI.Enabled() {
+		items := make([]fanqie.RankItem, 0, len(unidbg.AppRanks))
+		for _, r := range unidbg.AppRanks {
+			items = append(items, fanqie.RankItem{ID: strconv.Itoa(r.Algo), Name: r.Name})
+		}
+		c.JSON(http.StatusOK, gin.H{"items": []fanqie.RankGroup{
+			{Title: "官方榜单", Items: items},
+		}})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"items": h.FQ.GetRankGroups()})
 }
 
@@ -211,7 +234,7 @@ func (h *StoreHandler) Search(c *gin.Context) {
 	var books []fanqie.LibraryBook
 	var appErr error
 	if h.UNI.Enabled() {
-		if results, err := h.UNI.Search(query, count); err == nil {
+		if results, err := h.UNI.Search(query, count, offset); err == nil {
 			books = make([]fanqie.LibraryBook, 0, len(results))
 			for _, b := range results {
 				books = append(books, fanqie.LibraryBook{
@@ -248,16 +271,17 @@ func (h *StoreHandler) Search(c *gin.Context) {
 type featuredBoard struct {
 	Key    string
 	Name   string
-	Status int // creation_status：-1 全部，0 已完结
-	Words  int // 字数档位：0 全部，5 = 200万字以上
-	Sort   int // 0 热门，1 最新
+	Status int // creation_status：-1 全部，0 已完结（网页兜底用）
+	Words  int // 字数档位：0 全部，5 = 200万字以上（网页兜底用）
+	Sort   int // 0 热门，1 最新（网页兜底用）
+	Algo   int // 官方 App 协议榜单 algo_type（2026-10-03 抓包实测）
 }
 
 var featuredBoards = []featuredBoard{
-	{"recommend", "推荐榜", -1, 0, 0},
-	{"finished", "完本榜", 0, 0, 0},
-	{"new", "新书榜", -1, 0, 1},
-	{"peak", "巅峰榜", -1, 5, 0},
+	{"recommend", "推荐榜", -1, 0, 0, 101},
+	{"finished", "完本榜", 0, 0, 0, 100},
+	{"new", "新书榜", -1, 0, 1, 108},
+	{"peak", "巅峰榜", -1, 5, 0, 200},
 }
 
 // FeaturedBoards 预设榜单清单
@@ -269,7 +293,58 @@ func (h *StoreHandler) FeaturedBoards(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"items": items})
 }
 
+// appRankBatch 拉取一份官方榜单批（带 TTL 缓存）。genderList "1"=男生榜 "0"=女生榜。
+func (h *StoreHandler) appRankBatch(algo int, genderList string) ([]unidbg.FeedBook, error) {
+	key := strconv.Itoa(algo) + ":" + genderList
+	h.rankMu.Lock()
+	if ent, ok := h.rankCache[key]; ok && time.Since(ent.at) <= rankBatchTTL {
+		h.rankMu.Unlock()
+		return ent.books, nil
+	}
+	h.rankMu.Unlock()
+	books, err := h.UNI.RankPageBooks(algo, genderList)
+	if err != nil {
+		return nil, err
+	}
+	h.rankMu.Lock()
+	if h.rankCache == nil {
+		h.rankCache = map[string]rankBatchEntry{}
+	}
+	h.rankCache[key] = rankBatchEntry{books: books, at: time.Now()}
+	h.rankMu.Unlock()
+	return books, nil
+}
+
+// feedToLibrary unidbg.FeedBook → fanqie.LibraryBook（榜单卡片字段，word_count 协议无此值留空）
+func feedToLibrary(b unidbg.FeedBook) fanqie.LibraryBook {
+	return fanqie.LibraryBook{
+		ID:        b.BookID,
+		Title:     b.BookName,
+		Author:    b.Author,
+		Synopsis:  b.Abstract,
+		Cover:     b.ThumbURL,
+		Finished:  b.Finished,
+		ReadCount: b.ReadCount,
+	}
+}
+
+// sliceBatch 批内切片：越界返回空切片（App 端以 items 数量判断 has_more）
+func sliceBatch[T any](batch []T, offset, limit int) []T {
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(batch) {
+		return nil
+	}
+	end := offset + limit
+	if end > len(batch) {
+		end = len(batch)
+	}
+	return batch[offset:end]
+}
+
 // FeaturedBooks 预设榜单书籍：/store/featured/:board?gender=1&offset=0&limit=10
+// App 协议优先（官方 cell/change/v1，gender 1=男生榜 0=女生榜），网页书库兜底
 func (h *StoreHandler) FeaturedBooks(c *gin.Context) {
 	key := c.Param("board")
 	var preset *featuredBoard
@@ -291,6 +366,19 @@ func (h *StoreHandler) FeaturedBooks(c *gin.Context) {
 	size := clampQuery(c.Query("limit"), 10, 1, 30)
 	if offset < 0 {
 		offset = 0
+	}
+	if h.UNI.Enabled() {
+		if batch, err := h.appRankBatch(preset.Algo, gender); err == nil {
+			books := make([]fanqie.LibraryBook, 0, len(batch))
+			for _, b := range sliceBatch(batch, offset, size) {
+				books = append(books, feedToLibrary(b))
+			}
+			h.markBooks(books)
+			c.JSON(http.StatusOK, gin.H{"items": books, "offset": offset, "has_more": len(books) >= size})
+			return
+		} else {
+			log.Printf("[store] App 榜单 %s 失败: %v，落网页兜底", preset.Name, err)
+		}
 	}
 	page := offset / size
 	books, err := h.FQ.GetLibraryBooks(gender, -1, preset.Status, preset.Words, preset.Sort, page, size)
@@ -324,7 +412,9 @@ func clampQuery(s string, def, lo, hi int) int {
 	return v
 }
 
-// RankBooks 榜单书籍（分页）
+// RankBooks 榜单书籍（分页）。rankID 为官方协议 algo_type（如 100 完本榜）时走
+// App 协议（cell/change/v1，gender 1=男生榜 0=女生榜，top30 批内切片）；
+// 失败时对四主榜退书库近似，其余退网页榜单（rankID 为网页形态时走原路）。
 func (h *StoreHandler) RankBooks(c *gin.Context) {
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
@@ -334,7 +424,61 @@ func (h *StoreHandler) RankBooks(c *gin.Context) {
 	if offset < 0 {
 		offset = 0
 	}
-	books, err := h.FQ.GetRankingBooks(c.Param("rankID"), offset, limit)
+	rankID := c.Param("rankID")
+	gender := c.DefaultQuery("gender", "1")
+	if gender != "0" && gender != "1" {
+		gender = "1"
+	}
+	if algo, aerr := strconv.Atoi(rankID); aerr == nil && h.UNI.Enabled() {
+		if batch, err := h.appRankBatch(algo, gender); err == nil {
+			books := make([]fanqie.RankBook, 0, limit)
+			for i, b := range sliceBatch(batch, offset, limit) {
+				books = append(books, fanqie.RankBook{
+					ID: b.BookID, Rank: offset + i + 1, Title: b.BookName,
+					Author: b.Author, Synopsis: b.Abstract, Cover: b.ThumbURL,
+				})
+			}
+			for i := range books {
+				if bk, err := h.DB.GetBookByFanqieID(books[i].ID); err == nil {
+					books[i].InLibrary = true
+					books[i].LocalBookID = bk.ID
+					books[i].LocalStatus = bk.Status
+				}
+			}
+			c.JSON(http.StatusOK, gin.H{"items": books})
+			return
+		}
+		log.Printf("[store] App 完整榜单 %s 失败: %v", rankID, unidbg.AppRankByAlgo(algo))
+		// 退而求其次：四主榜有书库近似（网页端），其余无对应形态
+		for _, fb := range featuredBoards {
+			if fb.Algo == algo {
+				libs, werr := h.FQ.GetLibraryBooks(gender, -1, fb.Status, fb.Words, fb.Sort, offset/limit, limit)
+				if werr != nil {
+					c.JSON(http.StatusBadGateway, gin.H{"error": "获取榜单失败: " + werr.Error()})
+					return
+				}
+				books := make([]fanqie.RankBook, 0, len(libs))
+				for i, lb := range libs {
+					books = append(books, fanqie.RankBook{
+						ID: lb.ID, Rank: offset + i + 1, Title: lb.Title,
+						Author: lb.Author, Synopsis: lb.Synopsis, Cover: lb.Cover,
+					})
+				}
+				for i := range books {
+					if bk, err := h.DB.GetBookByFanqieID(books[i].ID); err == nil {
+						books[i].InLibrary = true
+						books[i].LocalBookID = bk.ID
+						books[i].LocalStatus = bk.Status
+					}
+				}
+				c.JSON(http.StatusOK, gin.H{"items": books})
+				return
+			}
+		}
+		c.JSON(http.StatusBadGateway, gin.H{"error": "获取榜单失败（App 协议不可用）"})
+		return
+	}
+	books, err := h.FQ.GetRankingBooks(rankID, offset, limit)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "获取榜单失败: " + err.Error()})
 		return

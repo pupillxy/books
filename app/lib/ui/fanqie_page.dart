@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -39,6 +41,7 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
   bool _feedHasMore = false;
   bool _feedPageLoading = false;
   List<FeedBook> _feedPageBooks = const [];
+  Timer? _feedRetryTimer;
 
   // ── 推荐频道：榜单卡子榜 ──
   static const _rankTabs = ['推荐榜', '完本榜', '巅峰榜', '新书榜'];
@@ -64,6 +67,12 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
   void initState() {
     super.initState();
     _loadFeed();
+  }
+
+  @override
+  void dispose() {
+    _feedRetryTimer?.cancel();
+    super.dispose();
   }
 
   // ── feed（推荐榜数据源）────────────────────────────────────────
@@ -101,6 +110,11 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
         setState(() => _rankTabIdx = 1);
         _ensureBoard(_boardKeys[1]!);
       }
+      // 静默自动重试（server 有 60s 负缓存，不会打爆上游），恢复后页面自动回填
+      _feedRetryTimer?.cancel();
+      _feedRetryTimer = Timer(const Duration(seconds: 90), () {
+        if (mounted && _feedError != null) _loadFeed();
+      });
     }
   }
 
@@ -493,14 +507,26 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
       return Padding(
         padding: const EdgeInsets.symmetric(vertical: 14),
         child: (err != null)
-            ? ErrorRetry(message: err, onRetry: () {
-                if (_rankTabIdx == 0) {
-                  _loadFeed();
-                } else {
-                  _ensureBoard(_boardKeys[_rankTabIdx]!);
-                  setState(() {});
-                }
-              })
+            ? (_rankTabIdx == 0)
+                ? Row(children: [
+                    Icon(Icons.cloud_off_rounded,
+                        size: 16, color: Theme.of(context).colorScheme.outline),
+                    const SizedBox(width: 8),
+                    Expanded(
+                        child: Text('推荐榜暂时不可用，稍后会自动恢复',
+                            style: TextStyle(
+                                fontSize: 12.5,
+                                color:
+                                    Theme.of(context).colorScheme.outline))),
+                    TextButton(
+                        onPressed: _loadFeed,
+                        child:
+                            const Text('重试', style: TextStyle(fontSize: 12.5))),
+                  ])
+                : ErrorRetry(message: err, onRetry: () {
+                    _ensureBoard(_boardKeys[_rankTabIdx]!);
+                    setState(() {});
+                  })
             : const EmptyView(
                 icon: Icons.leaderboard_rounded, title: '该榜单暂无内容'),
       );
@@ -540,8 +566,20 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
       }
       if (_feedError != null) {
         return Padding(
-            padding: const EdgeInsets.fromLTRB(14, 12, 14, 0),
-            child: ErrorRetry(message: _feedError!, onRetry: _loadFeed));
+            padding: const EdgeInsets.fromLTRB(14, 20, 14, 0),
+            child: Row(children: [
+              Icon(Icons.cloud_off_rounded,
+                  size: 16, color: Theme.of(context).colorScheme.outline),
+              const SizedBox(width: 8),
+              Expanded(
+                  child: Text('推荐流暂时不可用，稍后会自动恢复',
+                      style: TextStyle(
+                          fontSize: 12.5,
+                          color: Theme.of(context).colorScheme.outline))),
+              TextButton(
+                  onPressed: _loadFeed,
+                  child: const Text('重试', style: TextStyle(fontSize: 12.5))),
+            ]));
       }
       return const SizedBox.shrink();
     }

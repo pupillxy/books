@@ -22,7 +22,7 @@
 | 番茄·书城浏览/榜单（近似） | 网页端 fanqienovel.com | `server/internal/fanqie/client.go`、`searchweb.go`、`abogus.go` | 免登录抓取 + a_bogus 签名；被风控时负缓存 60s |
 | 番茄·App 书城 feed（真实排行榜） | unidbg 服务 | `server/internal/unidbg/unidbg.go` `HomeFeed()` | `GET /api/store/appfeed`；解析 bookmall/tab 推荐流 |
 | 番茄·搜索/详情/目录 | **App 协议优先**（unidbg）→ 网页兜底 | `handler/store.go` `Search`/`getBookDetail`/`getChapters` | App 搜索在 NAS 偶发服务层 NPE（"Cannot read the array length"），网页兜底覆盖 |
-| 番茄·章节正文（在线读） | 按需回源：**App 协议优先** → 网页兜底 | `handler/book.go` `Chapter`+`fetchOnlineContent` | 读到哪章拉哪章并缓存（FillChapterContent），预取下一章；付费章 402 |
+| 番茄·章节正文（在线读） | 按需回源：**App 协议优先 → 真机签名桥 → 网页兜底**（总预算 40s） | `handler/book.go` `Chapter`+`fetchOnlineContents` | 读到哪章拉哪章并缓存（FillChapterContent），预取下一章；三通道全挂 402「稍后重试」。App 协议可读「网页仅试读」的章 |
 | 番茄·整本离线缓存 | unidbg 下载器（TND 兜底） | `unidbg.DownloadBook`、`store.go triggerDownload` | 3s/批、断点续传；仅显式触发（`?download=1` 或 POST /download） |
 | 短剧 | 红果 App 协议 | `server/internal/hongguo/` | 与番茄无关，独立风控（锁版本 73532） |
 | 追更 | 每日目录刷新 | `handler/updater.go` | **只刷目录元数据**，新章节靠按需回源，不再批量下载 |
@@ -128,6 +128,11 @@ cd _reference/fqnovel-unidbg-src
 5. **compose 编辑**：ssh cat 拉到本地改完推回，**先备份**，推完 `wc -c` 校验；
    `cat x | ssh "cat > f && build &"` 这种管道+后台组合会把文件截断（踩过）
 6. 番茄网页详情/目录被限流是常态：`store.go` 已有负缓存+三重兜底，别删
+7. **真机签名桥跑在开发机 PC**（192.168.31.102:9998，需 fqsig 模拟器运行 +
+   `python _reference/fqemu/capture_xiaoshuo_1003/bridge/bridge_server.py` 常驻）。
+   PC 关机/模拟器没开 = 第三通道下线：unidbg 正文被标记期间，
+   「网页仅试读」的章会 402，直到 unidbg 冷却自愈（~1-2h）或桥恢复。
+   桥启动后 health 应返回 `{"ready": true}`，NAS 侧 curl 通才算数（Windows 防火墙）
 
 ## 8. 文件地图
 

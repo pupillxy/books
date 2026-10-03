@@ -2,11 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/api.dart';
+import '../core/book_search.dart';
 import '../core/local_books.dart';
 import '../core/mo_theme.dart';
 import '../core/reader_source.dart';
 import '../core/session.dart';
 import '../models.dart';
+import 'book_content_search_page.dart';
 import 'book_detail_page.dart';
 import 'reader_page.dart';
 import 'store_page.dart';
@@ -93,7 +95,7 @@ class _BookshelfPageState extends ConsumerState<BookshelfPage>
 
   // ---------- 本机书 ----------
 
-  void _openLocal(LocalBookMeta m) async {
+  void _openLocal(LocalBookMeta m, {int? initialChapter, int? initialCharOffset}) async {
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -107,8 +109,11 @@ class _BookshelfPageState extends ConsumerState<BookshelfPage>
       await Navigator.of(context).push(MaterialPageRoute(
         builder: (_) => ReaderPage(
           book: localBookAsBook(m),
-          initialChapter:
-              content.chapterCount > 0 ? progress.clamp(0, content.chapterCount - 1) : 0,
+          initialChapter: initialChapter ??
+              (content.chapterCount > 0
+                  ? progress.clamp(0, content.chapterCount - 1)
+                  : 0),
+          initialCharOffset: initialCharOffset,
           source: LocalReaderSource(content),
         ),
       ));
@@ -119,6 +124,16 @@ class _BookshelfPageState extends ConsumerState<BookshelfPage>
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: Text('打开失败：$e'), behavior: SnackBarBehavior.floating));
     }
+  }
+
+  /// 书内内容搜索：搜索页返回命中的那条 → 打开阅读器并定位
+  Future<void> _searchLocalContent(LocalBookMeta m) async {
+    final hit = await Navigator.of(context).push<BookSearchHit>(
+      MaterialPageRoute(builder: (_) => BookContentSearchPage(meta: m)),
+    );
+    if (hit == null || !mounted) return;
+    _openLocal(m,
+        initialChapter: hit.chapterIdx, initialCharOffset: hit.startInChapter);
   }
 
   Future<void> _importLocal() async {
@@ -172,6 +187,15 @@ class _BookshelfPageState extends ConsumerState<BookshelfPage>
               onTap: () {
                 Navigator.pop(sheet);
                 _openLocal(m);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.manage_search),
+              title: const Text('搜索书内内容'),
+              subtitle: const Text('搜正文关键词，直达所在章节'),
+              onTap: () {
+                Navigator.pop(sheet);
+                _searchLocalContent(m);
               },
             ),
             ListTile(

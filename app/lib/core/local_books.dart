@@ -72,6 +72,9 @@ class LocalBookContent {
   final String _text;
   LocalBookContent(this.meta, this._text);
 
+  /// 整本解码后文本（书内搜索用；与 meta.chapters 的字符偏移同一坐标系）
+  String get fullText => _text;
+
   int get chapterCount => meta.chapters.length;
 
   Chapter chapterAt(int idx) {

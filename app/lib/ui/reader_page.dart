@@ -143,6 +143,7 @@ class ReaderPage extends ConsumerStatefulWidget {
     required this.book,
     required this.initialChapter,
     this.source,
+    this.initialCharOffset, // 进入时定位到章内字符偏移（书内搜索跳转用）
   });
 
   final Book book;
@@ -150,6 +151,9 @@ class ReaderPage extends ConsumerStatefulWidget {
 
   /// 阅读数据源：null = 服务端在线书（走 API）；本机书传 LocalReaderSource
   final ReaderSource? source;
+
+  /// 打开时定位到 initialChapter 内容里的这个字符偏移（null = 常规恢复进度）
+  final int? initialCharOffset;
 
   @override
   ConsumerState<ReaderPage> createState() => _ReaderPageState();
@@ -184,6 +188,9 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
   int _pagedChapter = -1;
   int? _pendingPage; // 新章节要跳到的页
   int? _pendingChar; // 换排版要恢复的字符偏移
+  int? _pendingLocate; // 进入时定位的章内字符偏移（搜索跳转，消费一次）
+  int _locateIdx = -1; // 滚动模式：待定位的中心章条目下标
+  GlobalKey? _locateKey; // 滚动模式：定位条目的 key（ensureVisible 用）
 
   // 上下滚动模式（false = 左右翻页）。
   // 连续滚动模型：当前章为"中心"（offset 0），前章向负方向、后章向正方向无缝拼接，
@@ -223,6 +230,7 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
     _pageController = PageController();
     _scrollCtl.addListener(_onScroll);
     _chapterIdx = widget.initialChapter;
+    _pendingLocate = widget.initialCharOffset;
     _restorePrefsAndLoad();
   }
 
@@ -237,12 +245,14 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
       _scrollMode = prefs.getBool('rd.scroll') ?? true;
     });
     _applySystemUi();
+    // 带定位进入（搜索跳转）：不做进度恢复，直接定位到命中处
+    final locating = _pendingLocate != null;
     final savedCh = prefs.getInt('rd.ch.${_source.persistKey}');
     final sameCh = savedCh == _chapterIdx;
     final restorePage =
-        sameCh ? (prefs.getInt('rd.pg.${_source.persistKey}') ?? 0) : 0;
+        sameCh && !locating ? (prefs.getInt('rd.pg.${_source.persistKey}') ?? 0) : 0;
     final restoreScroll =
-        sameCh ? prefs.getDouble('rd.so.${_source.persistKey}') : null;
+        sameCh && !locating ? prefs.getDouble('rd.so.${_source.persistKey}') : null;
     await _loadChapter(_chapterIdx,
         page: restorePage, scrollOffset: restoreScroll);
   }
@@ -375,6 +385,8 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
   Future<void> _loadChapter(int idx,
       {int page = 0, double? scrollOffset}) async {
     if (idx < 0 || (_total > 0 && idx >= _total)) return;
+    final locate = _pendingLocate;
+    _pendingLocate = null; // 只在进入时消费一次
     setState(() {
       _loading = true;
       _error = null;
@@ -388,7 +400,13 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
         _chapterIdx = idx;
         _chapterTitle = ch.title;
         _content = ch.content;
-        _pendingPage = _scrollMode ? null : page;
+        if (!_scrollMode && locate != null) {
+          // 分页模式：交给 _ensurePaginated 按 _pendingChar 落到命中页
+          _pendingPage = null;
+          _pendingChar = locate;
+        } else {
+          _pendingPage = _scrollMode ? null : page;
+        }
         _loading = false;
         if (_scrollMode) {
           // 当前章居中，前后邻章另行预挂
@@ -404,8 +422,12 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
       if (_scrollMode) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (!mounted || !_scrollMode || !_scrollCtl.hasClients) return;
-          _scrollCtl.jumpTo(
-              (scrollOffset ?? 0.0).clamp(0.0, _scrollCtl.position.maxScrollExtent));
+          if (locate != null) {
+            _locateInCenter(locate);
+          } else {
+            _scrollCtl.jumpTo(
+                (scrollOffset ?? 0.0).clamp(0.0, _scrollCtl.position.maxScrollExtent));
+          }
         });
         // 急切挂载前后邻章，保证章界无缝
         _mountNeighbor(1);
@@ -420,6 +442,102 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
         _loading = false;
       });
     }
+  }
+
+  /// 滚动模式：按章内字符偏移找到所在段落条目，跳过去并精确定位
+  void _locateInCenter(int charOffset) {
+    var target = -1;
+    for (var i = 0; i < _centerItems.length; i++) {
+      final it = _centerItems[i];
+      if (it.isTitle || it.charStart == null) continue;
+      if (it.charStart! <= charOffset) {
+        target = i;
+      } else {
+        break;
+      }
+    }
+    if (target < 0) {
+      // 命中在章首标题行内：直接回章首
+      if (_scrollCtl.hasClients) _scrollCtl.jumpTo(0);
+      return;
+    }
+    _locateRound(target, 0);
+  }
+
+  /// SliverList 懒构建：先按文字测量估算目标条目的像素位置跳过去，
+  /// 目标条目进入构建范围后挂 key 用 ensureVisible 精校；
+  /// 估算被 maxScrollExtent 截断时（章很长）逐轮续跳
+  void _locateRound(int itemIdx, int round) {
+    if (!mounted || !_scrollMode || !_scrollCtl.hasClients) return;
+    final est = _estimateItemOffset(itemIdx);
+    final vp = _scrollCtl.position.viewportDimension;
+    _scrollCtl.jumpTo(
+        (est - vp * 0.18).clamp(0.0, _scrollCtl.position.maxScrollExtent));
+    setState(() {
+      _locateIdx = itemIdx;
+      _locateKey ??= GlobalKey();
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final ctx = _locateKey?.currentContext;
+      if (ctx != null) {
+        Scrollable.ensureVisible(ctx,
+            alignment: 0.2,
+            duration: const Duration(milliseconds: 220),
+            curve: Curves.easeOutCubic);
+        _clearLocate();
+      } else if (round < 12) {
+        _locateRound(itemIdx, round + 1);
+      } else {
+        _clearLocate();
+      }
+    });
+  }
+
+  void _clearLocate() {
+    if (!mounted) return;
+    setState(() {
+      _locateIdx = -1;
+      _locateKey = null;
+    });
+  }
+
+  /// 中心章第 itemIdx 个条目顶边在滚动坐标里的位置（章首标题 = 条目 0）。
+  /// 与 _scrollItemView 用同样的样式/宽度测量，估算即真实高度
+  double _estimateItemOffset(int itemIdx) {
+    final w = MediaQuery.of(context).size.width - _padH * 2;
+    final scaler = MediaQuery.textScalerOf(context);
+    var h = 4.0; // 中心章 SliverPadding 顶部
+    for (var i = 0; i < itemIdx && i < _centerItems.length; i++) {
+      final it = _centerItems[i];
+      if (it.isTitle) {
+        h += 8 +
+            12 +
+            _measureTextHeight(
+                it.text,
+                TextStyle(
+                    fontSize: _fontSize + 2,
+                    height: 1.45,
+                    fontWeight: FontWeight.w700),
+                w,
+                scaler);
+      } else {
+        h += _measureTextHeight(it.text, _bodyStyle(), w, scaler);
+      }
+    }
+    return h;
+  }
+
+  double _measureTextHeight(
+      String text, TextStyle style, double w, TextScaler scaler) {
+    final tp = TextPainter(
+      text: TextSpan(text: text, style: style),
+      textDirection: TextDirection.ltr,
+      textScaler: scaler,
+    )..layout(maxWidth: w);
+    final h = tp.height;
+    tp.dispose();
+    return h;
   }
 
   Future<void> _prefetch(int idx) async {
@@ -914,13 +1032,20 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
   /// 挂载邻章只向两端扩展，已读内容像素位置不动 → 跨章无跳动。
   Widget _scrollBody(ReaderTheme theme) {
     SliverPadding sliverList(List<_ScrollItem> items, EdgeInsets padding,
-            {Key? key}) =>
+            {Key? key, bool isCenter = false}) =>
         SliverPadding(
           key: key,
           padding: padding,
           sliver: SliverList(
             delegate: SliverChildBuilderDelegate(
-              (context, i) => _scrollItemView(items[i], theme),
+              (context, i) {
+                final view = _scrollItemView(items[i], theme);
+                // 书内搜索定位：给目标条目挂 key（仅中心章）
+                if (isCenter && i == _locateIdx && _locateKey != null) {
+                  return KeyedSubtree(key: _locateKey, child: view);
+                }
+                return view;
+              },
               childCount: items.length,
             ),
           ),
@@ -933,7 +1058,7 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
         if (_leadItems.isNotEmpty)
           sliverList(_leadItems, const EdgeInsets.symmetric(horizontal: _padH)),
         sliverList(_centerItems, const EdgeInsets.fromLTRB(_padH, 4, _padH, 0),
-            key: _centerKey),
+            key: _centerKey, isCenter: true),
         if (_trailItems.isNotEmpty)
           sliverList(_trailItems, const EdgeInsets.symmetric(horizontal: _padH)),
         const SliverToBoxAdapter(child: SizedBox(height: 24)),
@@ -1015,11 +1140,19 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
       ];
       final content = c?.content;
       if (content != null) {
-        for (final line in content.split(RegExp(r'\r?\n'))) {
+        // 按 '\n' 切分并累加偏移（与章节切分表同一坐标系），段落记录章内起点，
+        // 供书内搜索定位
+        var off = 0;
+        for (final line in content.split('\n')) {
           final p = line.trim();
-          if (p.isEmpty) continue;
-          items.add(_ScrollItem(
-              ch: ch, isTitle: false, text: ReaderPaginator._indent(p)));
+          if (p.isNotEmpty) {
+            items.add(_ScrollItem(
+                ch: ch,
+                isTitle: false,
+                text: ReaderPaginator._indent(p),
+                charStart: off + line.indexOf(p)));
+          }
+          off += line.length + 1; // +1 为被 split 吃掉的换行
         }
       }
       return items;
@@ -1475,11 +1608,15 @@ class _ScrollItem {
     required this.ch,
     required this.isTitle,
     required this.text,
+    this.charStart,
   });
 
   final int ch;
   final bool isTitle;
   final String text;
+
+  /// 段落首字符在章内容中的偏移（标题为 null），书内搜索定位用
+  final int? charStart;
 }
 
 /// 设置面板：主题色块（选中主色描边 2.5 + 光环）

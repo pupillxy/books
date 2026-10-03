@@ -138,27 +138,22 @@ func (h *BookHandler) Chapter(c *gin.Context) {
 	c.JSON(http.StatusOK, ch)
 }
 
-// fetchOnlineContents 在线正文：网页端优先，未命中走 unidbg 批量（解密明文）。
+// fetchOnlineContents 在线正文：App 协议优先（unidbg 批量，匿名设备可读
+// 「网页仅试读」的章），未命中走真机签名桥，最后网页端兜底。
+// 整体预算 40s：三通道全挂时也要在 App 60s 接收超时前返回可提示的错误。
 // 单章端点高频必触发设备风控，已弃用（10/03 事故）。titles 用于剥掉
 // unidbg txtContent 首行的章节名；ferr 为网页端的最后一个错误（402 判定用）。
 func (h *BookHandler) fetchOnlineContents(fid string, srcIDs []string, titles map[string]string) (map[string]string, error) {
 	out := map[string]string{}
 	var ferr error
-	var missing []string
-	for _, sid := range srcIDs {
-		cc, err := h.FQ.GetChapterContent(sid)
-		if err == nil && len([]rune(cc.Content)) >= 50 {
-			out[sid] = cc.Content
-			continue
-		}
-		if err != nil && ferr == nil {
-			ferr = err
-		}
-		missing = append(missing, sid)
-	}
-	if len(missing) > 0 && h.UNI != nil && h.UNI.Enabled() {
-		res, err := h.UNI.ChapterContentsBatch(fid, missing)
-		if err == nil {
+	deadline := time.Now().Add(40 * time.Second)
+
+	// ① App 协议批量（当前章+下一章一请求；设备被标记时在此失败，静默降级）
+	if h.UNI != nil && h.UNI.Enabled() {
+		res, err := h.UNI.ChapterContentsBatch(fid, srcIDs)
+		if err != nil {
+			log.Printf("[uni] 批量正文失败 fid=%s n=%d: %v", fid, len(srcIDs), err)
+		} else {
 			for sid, txt := range res {
 				txt = strings.TrimPrefix(txt, titles[sid]+"\n")
 				if len([]rune(txt)) >= 50 {
@@ -167,18 +162,34 @@ func (h *BookHandler) fetchOnlineContents(fid string, srcIDs []string, titles ma
 			}
 		}
 	}
-	// 最终兜底：真机签名桥（App 自己签名代发，风控无法区分；unidbg 被打标时的救命通道）
-	if h.BridgeURL != "" {
-		for _, sid := range missing {
-			if _, ok := out[sid]; ok {
+
+	// ② 真机签名桥（App 代签代发，风控无法区分；unidbg 被打标时的救命通道）
+	for _, sid := range srcIDs {
+		if _, ok := out[sid]; ok || h.BridgeURL == "" || time.Now().After(deadline) {
+			continue
+		}
+		txt, err := h.bridgeChapter(fid, sid, titles[sid])
+		if err != nil {
+			log.Printf("[bridge] 正文兜底失败 sid=%s: %v", sid, err)
+			continue
+		}
+		out[sid] = txt
+	}
+
+	// ③ 网页端兜底（免费章可用；「付费仅预览」章在网页端判定锁定）
+	if h.FQ != nil {
+		for _, sid := range srcIDs {
+			if _, ok := out[sid]; ok || time.Now().After(deadline) {
 				continue
 			}
-			txt, err := h.bridgeChapter(fid, sid, titles[sid])
-			if err != nil {
-				log.Printf("[bridge] 正文兜底失败 sid=%s: %v", sid, err)
+			cc, err := h.FQ.GetChapterContent(sid)
+			if err == nil && len([]rune(cc.Content)) >= 50 {
+				out[sid] = cc.Content
 				continue
 			}
-			out[sid] = txt
+			if err != nil && ferr == nil {
+				ferr = err
+			}
 		}
 	}
 	return out, ferr
@@ -196,7 +207,8 @@ func (h *BookHandler) bridgeChapter(fid, srcID, title string) (string, error) {
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: 60 * time.Second}
+	// 桥下线时连接会挂住，必须短超时把时间留给后面的网页兜底
+	client := &http.Client{Timeout: 12 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err

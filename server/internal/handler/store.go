@@ -101,7 +101,7 @@ func (h *StoreHandler) getChapters(fid string) ([]fanqie.ChapterInfo, error) {
 				if idx < 0 {
 					idx = i
 				}
-				out = append(out, fanqie.ChapterInfo{ID: m.ItemID, Index: idx + 1, Title: m.Title})
+				out = append(out, fanqie.ChapterInfo{ID: m.ItemID, Index: idx + 1, Title: m.Title, IsFree: true})
 			}
 			return out, nil
 		}

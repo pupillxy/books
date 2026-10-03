@@ -40,3 +40,10 @@ _reference/fqnovel-unidbg-src/target/
 _reference/fqnovel-unidbg-src/results/
 _reference/maven.zip
 _reference/maven-home/
+
+# 抓包档案大文件 / 本地运行目录 / 模拟器工具二进制
+_reference/fqemu/capture_xiaoshuo_1003/*.png
+_reference/fqemu/capture_xiaoshuo_1003/*.apk
+_reference/fqnovel-unidbg-src/run-avd/
+_reference/frida-server*
+_reference/fs*.xz

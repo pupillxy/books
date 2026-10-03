@@ -64,15 +64,16 @@
 - 设备被标记（报「响应格式异常/空响应，请手动更新设备信息」）：
   `POST /api/device/register`（body 可空 JSON，自动换设备）→ **必须重启容器才生效**
   （autoUpdateConfig 实测不落盘 application.yml！手动改 yml 也可以）。
-- **正文接口只信任有资历的设备**：新注册设备 feed/目录正常但正文空响应。
-  实测作者老设备也会被标记（10/02：恢复后 20 分钟内再挂），内容风控冷却 >1 小时——
-  所以正文的长稳方案 = TND 后台兜底，App 协议正文当作"能白嫖就白嫖"的加速通道。
-  当前配置用的是仓库自带的老华为设备（正文可用，勿随意轮换）；
-  自动轮换已在生产启用（compose `XS_UNIDBG_ROTATE=1`，10 分钟节流）：feed 被标记
-  时自动换设备自愈（约 30-60 秒），此时正文由 TND 兜底承担（长稳方案）。
+- **正文接口只信任有资历的设备**：新注册设备 feed/目录正常但正文空响应（0 字节），
+  且是**所有章节**一起挂，与付费与否无关。内容风控冷却 >1 小时。
+  当前配置（10/03 起）用的是 fqsig AVD 实测可读正文的设备（google sdk_gphone64_x86_64，
+  device_id 4052162698366793，国内 73733 注册 + oversea 68132 签名混搭被服务端接受）；
+  自动轮换已**关闭**（compose `XS_UNIDBG_ROTATE=0`）——10/03 事故证明轮换保 feed 毁正文
+  资历（换新设备 34 秒后用户切章即全挂）。设备被标记时先评估：feed 风控可冷却自愈，
+  别轻易牺牲正文通道；确要轮换用 `POST /api/device/register` + 重启，并尽快恢复有资历设备。
 - **IP 级限流**：换设备也没用、连搜索都 code=-1 = IP 被限。冷却几十分钟自愈，不要慌。
 - 限速纪律：批量正文 3s/批（每批 20 章）；测试时克制，PC 与 NAS 共用同一公网 IP。
-- 设备信息在 `application.yml` 的 `fq.device`（当前 Xiaomi 23127PN0CC / 68132 海外版）。
+- 设备信息在 `application.yml` 的 `fq.api.device`（当前 AVD 设备，见 `capture_xiaoshuo_1003/FINDINGS.md`）。
   签名与 URL 绑定且校验设备一致性——**URL 里的 device_id/iid/cdid 必须与 unidbg 配置一致**，
   否则 native 直接崩（报「获取结果指针失败」）。
 - 签名接口 `/api/fq-signature/*` 对外可用性差（需完整 headers map + 完整参数 URL 才不崩），
@@ -141,4 +142,7 @@ app/build/outputs/flutter-apk/  — 构建出的 APK
 
 - 「猜你喜欢」个性化推荐流（动态 lynx 模板 + 独立分页接口）未接——排行榜已同源
 - 漫画频道（腾讯动漫 ac.qq.com 爬取 + 拷贝漫画）已验证未实现，见对话档案
-- 番茄付费章节：网页/unidbg 免费通道都拿不到，402 提示用户离线缓存（其实也拿不到，需账号）
+- 「付费章」旧结论已推翻（10/03 实测）：网页端只给试读 ≠ 付费章，App 协议匿名设备
+  可读（第 63 章实例，`_reference/fqemu/capture_xiaoshuo_1003/FINDINGS.md`）。
+  未做：`book.go` 的 402 文案「该章节为会员内容」仍以网页 ErrChapterLocked 判定，误导，
+  待改成中性文案；真正需要账号权益的章是否存在待遇见时再验证。

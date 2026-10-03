@@ -65,7 +65,7 @@ func (h *BookHandler) Detail(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"book": book, "chapters": chapters})
 }
 
-// Chapter 混合读取：本地命中 → 在线免费章拉取回填 → 付费章提示等待下载
+// Chapter 混合读取：本地命中 → 在线拉取回填 → 双源失败提示稍后重试
 func (h *BookHandler) Chapter(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
@@ -105,18 +105,12 @@ func (h *BookHandler) Chapter(c *gin.Context) {
 
 	content, ctitle, ferr := h.fetchOnlineContent(book.FanqieID, srcID, ch.Title)
 	if len([]rune(content)) < 50 {
-		// 两个源都拿不到正文（新注册设备被内容接口风控/付费章锁定）：
-		// 自动在后台准备整本内容，用户稍后重试即可读到
-		locked := errors.Is(ferr, fanqie.ErrChapterLocked)
+		// 双源都拿不到正文（多为设备内容风控，冷却后自愈）：提示重试，后台顺带准备整本
 		if h.RequestDownload != nil {
 			go func() { _ = h.RequestDownload(book.FanqieID, book.Title, book.ID) }()
 		}
-		msg := "该章节正文获取中，已自动在后台准备整本内容，几分钟内重试即可阅读"
-		if locked {
-			msg = "该章节为会员内容，已自动在后台准备整本，几分钟后重试"
-		}
-		log.Printf("[store] 在线正文失败 book=%d idx=%d locked=%v: %v", id, idx, locked, ferr)
-		c.JSON(http.StatusPaymentRequired, gin.H{"error": msg, "title": ctitle})
+		log.Printf("[store] 在线正文失败 book=%d idx=%d locked=%v: %v", id, idx, errors.Is(ferr, fanqie.ErrChapterLocked), ferr)
+		c.JSON(http.StatusPaymentRequired, gin.H{"error": "该章节正文暂时获取失败，请稍后重试", "title": ctitle})
 		return
 	}
 	_ = h.DB.FillChapterContent(id, idx, content)

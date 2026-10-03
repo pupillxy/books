@@ -572,7 +572,7 @@ func (c *Client) GetBookDetail(bookID string) (*BookDetail, error) {
 
 // ─── 章节目录（API）───────────────────────────────────────────────────
 
-// GetChapters 获取完整章节目录（含付费章节标记）
+// GetChapters 获取完整章节目录
 func (c *Client) GetChapters(bookID string) ([]ChapterInfo, error) {
 	body, err := c.getWithRetry(
 		fmt.Sprintf("https://fanqienovel.com/api/reader/directory/detail?bookId=%s", bookID),
@@ -614,28 +614,14 @@ func (c *Client) GetChapters(bookID string) ([]ChapterInfo, error) {
 
 	chapters := make([]ChapterInfo, 0, len(flat))
 	for i, ch := range flat {
-		needPay := 1
-		if v, ok := ch["needPay"].(float64); ok {
-			needPay = int(v)
-		} else if v, ok := ch["need_pay"].(float64); ok {
-			needPay = int(v)
-		}
-		isPaidStory := true
-		if v, ok := ch["isPaidStory"].(bool); ok {
-			isPaidStory = v
-		}
-		// isChapterLock：逐章锁标记，是付费章节的可靠判据
-		// （实测《人在诡异》目录里 needPay/isPaidStory 全 0/false，仅 isChapterLock 区分）
-		isLock := false
-		if v, ok := ch["isChapterLock"].(bool); ok {
-			isLock = v
-		}
 		title := DecryptPUA(strOr(ch, "title", "chapterName"))
 		chapters = append(chapters, ChapterInfo{
-			ID:     strOr(ch, "itemId", "item_id"),
-			Index:  i + 1,
-			Title:  title,
-			IsFree: !isLock && needPay == 0 && !isPaidStory,
+			ID:    strOr(ch, "itemId", "item_id"),
+			Index: i + 1,
+			Title: title,
+			// 网页端锁章判据已废（10/03 实测）：网页只给试读 ≠ 付费章，
+			// App 协议匿名设备可读全文，目录层一律标记可读，正文按需回源
+			IsFree: true,
 		})
 	}
 	return chapters, nil

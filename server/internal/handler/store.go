@@ -36,6 +36,11 @@ type StoreHandler struct {
 	// key = "<algo>:<genderList>"，TTL 内复用同一批，避免 App 翻页打爆 unidbg。
 	rankMu    sync.Mutex
 	rankCache map[string]rankBatchEntry
+
+	// App feed 缓存：tab/v 是风控敏感端点，每次进书城都拉会触发 code=110。
+	// 成功缓存 10 分钟、失败负缓存 60 秒（负缓存期内的重试直接返回失败，不打上游）。
+	feedMu   sync.Mutex
+	feedCache *storeFeedCacheEntry
 }
 
 const rankBatchTTL = 2 * time.Minute
@@ -756,15 +761,48 @@ func feedBooksOut(books []unidbg.FeedBook) []storeFeedBook {
 	return booksOut
 }
 
+// storeFeedCacheEntry App feed 缓存条目（err 非空 = 负缓存）
+type storeFeedCacheEntry struct {
+	out  []storeFeedSection
+	err  string
+	at   time.Time
+}
+
+const (
+	feedCacheTTL    = 10 * time.Minute // tab/v 风控敏感：成功结果缓存 10 分钟
+	feedNegCacheTTL = 60 * time.Second // 失败负缓存 60 秒，防止重试打爆上游
+)
+
 // AppFeed App 书城首页 feed（与番茄 App 同源：实时热度排行榜等模块）
 func (h *StoreHandler) AppFeed(c *gin.Context) {
 	if !h.UNI.Enabled() {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "unidbg 服务未配置（XS_UNIDBG_URL）"})
 		return
 	}
+	h.feedMu.Lock()
+	cached := h.feedCache
+	h.feedMu.Unlock()
+	if cached != nil {
+		ttl := feedCacheTTL
+		if cached.err != "" {
+			ttl = feedNegCacheTTL
+		}
+		if time.Since(cached.at) < ttl {
+			if cached.err != "" {
+				c.JSON(http.StatusBadGateway, gin.H{"error": cached.err})
+			} else {
+				c.JSON(http.StatusOK, gin.H{"sections": cached.out})
+			}
+			return
+		}
+	}
 	secs, err := h.UNI.HomeFeed()
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "获取 App feed 失败: " + err.Error()})
+		errMsg := "获取 App feed 失败: " + err.Error()
+		h.feedMu.Lock()
+		h.feedCache = &storeFeedCacheEntry{err: errMsg, at: time.Now()}
+		h.feedMu.Unlock()
+		c.JSON(http.StatusBadGateway, gin.H{"error": errMsg})
 		return
 	}
 	out := make([]storeFeedSection, 0, len(secs))
@@ -774,6 +812,9 @@ func (h *StoreHandler) AppFeed(c *gin.Context) {
 			CellID: s.CellID, PlanID: s.PlanID, AlgoType: s.AlgoType, NextOffset: s.NextOffset,
 		})
 	}
+	h.feedMu.Lock()
+	h.feedCache = &storeFeedCacheEntry{out: out, at: time.Now()}
+	h.feedMu.Unlock()
 	c.JSON(http.StatusOK, gin.H{"sections": out})
 }
 // AppFeedPage 猜你喜欢瀑布流翻页：App 传 appfeed 下发的 cell_id/plan_id/offset，

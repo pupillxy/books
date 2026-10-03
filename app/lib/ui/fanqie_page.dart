@@ -91,7 +91,16 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
       setState(() {
         _feedLoading = false;
         _feedError = e.message;
+        _feedHasMore = false;
+        _feedCellId = '';
+        _feedPageBooks = const [];
       });
+      // 推荐榜数据源（tab/v）不可用时自动落到完本榜，保持页面可用；
+      // 推荐榜可手动切回，原位重试
+      if (_rankTabIdx == 0) {
+        setState(() => _rankTabIdx = 1);
+        _ensureBoard(_boardKeys[1]!);
+      }
     }
   }
 
@@ -317,11 +326,10 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
 
   // ── 推荐频道（榜单卡：子榜切换 + 两列网格）────────────────────────
   Widget _recBody(BuildContext context) {
-    if (_feedLoading && _rankTabIdx == 0) return _buildSkeleton(context);
-    if (_feedError != null && _rankTabIdx == 0) {
-      return ListView(physics: const AlwaysScrollableScrollPhysics(), children: [
-        ErrorRetry(message: _feedError!, onRetry: _loadFeed)
-      ]);
+    // feed 拉取失败不再整页报错：完本/巅峰/新书榜与瀑布流重试照常可用，
+    // 推荐榜和瀑布流各自在原位显示局部重试（server 风控自愈后点重试即恢复）
+    if (_feedLoading && _rankTabIdx == 0 && _feedSections.isEmpty) {
+      return _buildSkeleton(context);
     }
 
     return NotificationListener<ScrollNotification>(

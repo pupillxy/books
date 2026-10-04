@@ -21,8 +21,9 @@
 |---|---|---|---|
 | 番茄·书城浏览/榜单（近似） | 网页端 fanqienovel.com | `server/internal/fanqie/client.go`、`searchweb.go`、`abogus.go` | 免登录抓取 + a_bogus 签名；被风控时负缓存 60s |
 | 番茄·App 书城 feed（真实排行榜） | unidbg 服务 | `server/internal/unidbg/unidbg.go` `HomeFeed()` | `GET /api/store/appfeed`；解析 bookmall/tab 推荐流 |
-| 番茄·搜索/详情/目录 | **App 协议优先**（unidbg）→ 网页兜底 | `handler/store.go` `Search`/`getBookDetail`/`getChapters` | App 搜索在 NAS 偶发服务层 NPE（"Cannot read the array length"），网页兜底覆盖 |
-| 番茄·章节正文（在线读） | 按需回源：**App 协议优先 → 真机签名桥 → 网页兜底**（总预算 40s） | `handler/book.go` `Chapter`+`fetchOnlineContents` | 读到哪章拉哪章并缓存（FillChapterContent），预取下一章；三通道全挂 402「稍后重试」。App 协议可读「网页仅试读」的章 |
+| 番茄·搜索/详情/目录 | 搜索（10/05 起）：**TND 首选**（仅 offset=0，上游无翻页参数）→ App 协议（unidbg）→ 网页兜底；详情/目录仍 App 协议优先 → 网页兜底 | `handler/store.go` `Search`/`getBookDetail`/`getChapters`、`tnd.go` `Search` | TND 搜索直连官方基础设施（`GET /api/search?q=`，一次约 20 条，401 自动重登录）；搜索接口 `creation_status` 语义 1=完结 0=连载（同详情、与书城卡相反）。App 搜索在 NAS 偶发服务层 NPE（"Cannot read the array length"），网页兜底覆盖 |
+| 番茄·章节正文（在线读） | 按需回源：**当前只走 TND 范围任务（10/05 起，实测 ~5s/次）**；App 协议/真机签名桥/网页端三个通道由 `book.go` 顶部 const 开关临时关闭（恢复时改回 true） | `handler/book.go` `Chapter`+`fetchOnlineContents` | 读到哪章拉哪章并缓存（FillChapterContent），预取下一章；失败 402「稍后重试」。TND 可读「网页仅试读」的章。通道失败进健康记忆 10 分钟内跳过。关桥原因：桥不常开，每个健康窗口首笔正文白等 12s 拨号超时（10/05 前「新书首章 ~20s」即 12s 桥超时 + TND 叠加） |
+| 番茄·TND 按需单章（10/04 新增） | TND 范围任务（`/api/jobs` + `range_start/end`） | `tnd.go` `CreateRangeJob/WaitJob`、`book.go` `tndChapters` | 走番茄官方接口+闭源证件，读全量正文、无我们设备的风控压力；实测 8~15s/次。产物 `books/<fid>/status.json`（downloaded[item_id]=[章名,HTML]）或《书名》.epub，按 src_id 对号入座剥 HTML 入库。max_workers 已调 2 |
 | 番茄·整本离线缓存 | unidbg 下载器（TND 兜底） | `unidbg.DownloadBook`、`store.go triggerDownload` | 3s/批、断点续传；仅显式触发（`?download=1` 或 POST /download） |
 | 短剧 | 红果 App 协议 | `server/internal/hongguo/` | 与番茄无关，独立风控（锁版本 73532） |
 | 追更 | 每日目录刷新 | `handler/updater.go` | **只刷目录元数据**，新章节靠按需回源，不再批量下载 |
@@ -131,10 +132,31 @@ cd _reference/fqnovel-unidbg-src
 7. **真机签名桥跑在开发机 PC**（192.168.31.102:9998，需 fqsig 模拟器运行 +
    `python _reference/fqemu/capture_xiaoshuo_1003/bridge/bridge_server.py` 常驻）。
    PC 关机/模拟器没开 = 第三通道下线：unidbg 正文被标记期间，
-   「网页仅试读」的章会 402，直到 unidbg 冷却自愈（~1-2h）或桥恢复。
+   「网页仅试读」的章由 **TND 单章通道**兜底（10/04 上线），不再必然 402。
    桥启动后 health 应返回 `{"ready": true}`，NAS 侧 curl 通才算数（Windows 防火墙）
-
-## 8. 文件地图
+8. **TND 通道调研结论（10/04，连接级+TLS 证书级实证）**：
+   - TND 搜索/正文**直连番茄官方基础设施**（api5-normal-*.fqnovel.com、*.snssdk.com
+     证书验证）+ 少量网页端；crate **绕过系统 DNS**（自带解析器，/etc/hosts 屏蔽实验
+     因此无效）；偶尔连一个非番茄 CDN（金山云系 ksc-test），非必需环节。
+   - 「第三方 API 地址池」地址+token 闭源在 crate 里，是 no-official 模式的主力 /
+     official 模式的兜底，**不是我们配置下的正文主干**。
+   - 生态对照：ying-ck/fanqienovel-downloader（2.4k★）正文走硬编码中转
+     `101.35.133.34:5000/api/raw_full`（私人设备池，明文 HTTP）；TND = 本地闭源证件；
+     我们 = unidbg 真机签名（证件会被打标）。番茄面前没有魔法，只有谁的设备在承压。
+   - 探针脚本留档 `_probe/tnd_probe*.py`（连接采样/证书鉴定/range 任务实测）。
+   - **TND 容器踩坑**：删 books/ 挂载点目录会使 bind mount 失效（指向旧 inode），
+     必须重建目录后 `docker restart tomato-novel-downloader`；probe 清理脚本
+     `rmtree(BOOKSDIR)` 类 bug 会整目录删掉——清理时只删白名单条目。
+9. **书城 cell/change 冷会话软空页（10/04，10/05 缓存方案定案）**：番茄 bookmall
+   cell/change/v 在个性化会话冷启动/突发连打后会返回 **code=0 空页**（HTTP 200、无卡片、
+   has_more=false，持续约 1 分钟自愈；unidbg 设备本身正常，榜单等其他端点不受影响）。
+   **10/05 定案（根治）**：`AppFeedPage` 三层取数——内存缓存（3min 正/60s 负）→
+   DB 持久缓存 `feed_cache` 表（非强刷 6h 内直回放不碰上游，负缓存期回退任意年龄
+   陈旧值，上游失败也回退陈旧值）→ 上游聚合拉取（`guessFeedFetch`：逐页打到
+   ≥10 本或 3 页上限，游标取最后成功页）。App 下拉刷新/手动重试带 `refresh=1`
+   绕过①②强制回源并回写两级缓存（更新只跟随下拉刷新）；首屏因此毫秒级且完全
+   绕开冷会话。空页重试仍保留在 `unidbg.FeedPage` 内（800ms 一次）。实测样本
+   `_probe/store_feed_1004/`。
 
 ```
 docs/NAS部署脚本.md            — NAS 部署全流程（compose 片段/运维/踩坑）
@@ -143,13 +165,15 @@ _reference/fqnovel-unidbg-src/  — unidbg 签名服务（VERIFY.md = 验证+运
 _reference/fqemu/               — 旧 oracle 档案 + stage1_73733 采集档案（签名样本/脚本）
 _reference/fqd-rs2/             — fanqie-dl 逆向档案（Medusa VM 分析，ISSUE.md 是宝库）
 _reference/tnd-src/             — TND 源码（official-api crate 闭源）
+_probe/                         — TND 通道调研探针（连接采样/证书鉴定/range 任务实测）
 app/build/outputs/flutter-apk/  — 构建出的 APK
 ```
 
 ## 9. 已知未做 / 想做
 
 - 「猜你喜欢」瀑布流已接通（10/03，纯 cell/change 翻页 `/api/store/appfeed/page`；
-  旧「动态 lynx 模板」方案已弃）
+  旧「动态 lynx 模板」方案已弃）。10/04 补：服务端 3min 缓存 + 上游空页重试/兜底
+  （见 §7 第 9 条），修「书城下方空白需手动下拉」与首屏慢
 - 漫画频道已接通（10/04）：书城三频道（推荐/小说/漫画），`/api/store/comicfeed`
   + `/api/store/comics/:id`（详情+话列表）+ `/api/store/comics/:id/chapters/:itemID`
   （整话图片走 `/api/store/comicimg` 解密代理——**图片文件本身是 AES-256-GCM 加密**，
@@ -157,8 +181,7 @@ app/build/outputs/flutter-apk/  — 构建出的 APK
   `_reference/fqemu/capture_xiaoshuo_1004/FINDINGS.md`）。未做：漫画阅读进度持久化
 - 小说频道筛选瀑布流已接通（10/04，`/api/store/novelfeed`，`selected_items` 逗号多选，
   值如 finished/online_in_past_one_year/word_num_gt_200w/male/female/bian_ji_tui_jian）。
-  书城卡 `creation_status` 语义 0=完结 1=连载（与详情接口相反，勿再改回）
-- 「付费章」旧结论已推翻（10/03 实测）：网页端只给试读 ≠ 付费章，App 协议匿名设备
+  书城卡 `creation_status` 语义 0=完结 1=连载（与详情接口相反，勿再改回）旧结论已推翻（10/03 实测）：网页端只给试读 ≠ 付费章，App 协议匿名设备
   可读（第 63 章实例，`_reference/fqemu/capture_xiaoshuo_1003/FINDINGS.md`）。
   未做：`book.go` 的 402 文案「该章节为会员内容」仍以网页 ErrChapterLocked 判定，误导，
   待改成中性文案；真正需要账号权益的章是否存在待遇见时再验证。

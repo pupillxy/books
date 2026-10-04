@@ -25,6 +25,8 @@ class _StoreRankPageState extends ConsumerState<StoreRankPage> {
   String _rankName = '';
 
   final _books = <StoreBook>[];
+  final _scrollController = ScrollController();
+  int _booksReqGen = 0; // 请求代数：切换榜单可打断在途请求，防旧响应乱序覆盖
   bool _loading = false;
   bool _loadingMore = false;
   bool _hasMore = true;
@@ -36,6 +38,12 @@ class _StoreRankPageState extends ConsumerState<StoreRankPage> {
   void initState() {
     super.initState();
     _loadGroups();
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
   }
 
   ApiClient get _api => ref.read(sessionProvider).api!;
@@ -59,13 +67,16 @@ class _StoreRankPageState extends ConsumerState<StoreRankPage> {
   }
 
   Future<void> _loadBooks() async {
+    final gen = ++_booksReqGen;
+    if (_scrollController.hasClients) _scrollController.jumpTo(0);
     setState(() {
       _loading = true;
+      _loadingMore = false;
       _booksError = null;
     });
     try {
       final books = await _api.storeRankBooks(_rankId, offset: 0, limit: _pageSize);
-      if (!mounted) return;
+      if (!mounted || gen != _booksReqGen) return;
       setState(() {
         _books
           ..clear()
@@ -74,7 +85,7 @@ class _StoreRankPageState extends ConsumerState<StoreRankPage> {
         _loading = false;
       });
     } on ApiException catch (e) {
-      if (!mounted) return;
+      if (!mounted || gen != _booksReqGen) return;
       setState(() {
         _loading = false;
         _booksError = e.message;
@@ -84,28 +95,37 @@ class _StoreRankPageState extends ConsumerState<StoreRankPage> {
 
   Future<void> _loadMore() async {
     if (_loadingMore || !_hasMore || _loading) return;
+    final gen = _booksReqGen;
     setState(() => _loadingMore = true);
     try {
       final books = await _api.storeRankBooks(_rankId, offset: _books.length, limit: _pageSize);
-      if (!mounted) return;
+      if (!mounted || gen != _booksReqGen) return;
       setState(() {
         _books.addAll(books);
         _hasMore = books.length >= _pageSize;
         _loadingMore = false;
       });
     } on ApiException {
-      if (mounted) setState(() => _loadingMore = false);
+      if (mounted && gen == _booksReqGen) setState(() => _loadingMore = false);
     }
   }
 
-  void _selectRank(RankItem item) {
-    if (item.id == _rankId) return;
+  // 切换榜单：立即清掉旧榜内容回到加载态（不保留上一个榜的数据），并用请求代数
+  // 作废在途请求（快速连点时只有最后一次选择的结果会落地）
+  void _switchRank(String id, String name) {
+    if (id == _rankId) return;
     setState(() {
-      _rankId = item.id;
-      _rankName = item.name;
+      _rankId = id;
+      _rankName = name;
+      _books.clear();
+      _hasMore = true;
+      _loadingMore = false;
+      _booksError = null;
     });
     _loadBooks();
   }
+
+  void _selectRank(RankItem item) => _switchRank(item.id, item.name);
 
   void _openBook(StoreBook book) {
     Navigator.of(context).push(MaterialPageRoute(
@@ -133,6 +153,7 @@ class _StoreRankPageState extends ConsumerState<StoreRankPage> {
           color: cs.primary,
           onRefresh: _loadBooks,
           child: CustomScrollView(
+            controller: _scrollController,
             physics: const AlwaysScrollableScrollPhysics(),
             slivers: [
               const MoPinnedHeader(child: PageHeader(title: '完整榜单')),
@@ -151,12 +172,8 @@ class _StoreRankPageState extends ConsumerState<StoreRankPage> {
                           onTap: () {
                             final g = _groups![i];
                             if (g.items.isEmpty) return;
-                            setState(() {
-                              _groupIdx = i;
-                              _rankId = g.items.first.id;
-                              _rankName = g.items.first.name;
-                            });
-                            _loadBooks();
+                            setState(() => _groupIdx = i);
+                            _switchRank(g.items.first.id, g.items.first.name);
                           },
                         ),
                     ],

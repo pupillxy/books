@@ -38,6 +38,7 @@ class Book {
   final String cover;
   final String fanqieId;
   final int totalChapters;
+  final bool isComic; // source=comic：漫画行（仅元数据，阅读走漫画接口）
 
   const Book({
     required this.id,
@@ -47,6 +48,7 @@ class Book {
     required this.cover,
     required this.fanqieId,
     required this.totalChapters,
+    this.isComic = false,
   });
 
   factory Book.fromJson(Map<String, dynamic> j) => Book(
@@ -57,6 +59,7 @@ class Book {
         cover: (j['cover'] ?? '') as String,
         fanqieId: (j['fanqie_id'] ?? '') as String,
         totalChapters: (j['total_chapters'] as num?)?.toInt() ?? 0,
+        isComic: (j['source'] ?? '') == 'comic',
       );
 
   /// 后端把封面存成本地绝对路径（…/downloads/<书名>/cover.jpg），
@@ -753,6 +756,7 @@ class ComicDetailData {
   final String readCount;
   final String updateTag;
   final bool finished;
+  final bool onShelf; // 是否已在当前用户书架（未入库恒为 false）
   final List<StoreChapter> chapters;
 
   const ComicDetailData({
@@ -768,6 +772,7 @@ class ComicDetailData {
     this.readCount = '',
     this.updateTag = '',
     this.finished = false,
+    this.onShelf = false,
   });
 
   factory ComicDetailData.fromJson(Map<String, dynamic> j) => ComicDetailData(
@@ -782,6 +787,7 @@ class ComicDetailData {
         readCount: (j['read_count'] ?? '') as String,
         updateTag: (j['update_tag'] ?? '') as String,
         finished: (j['finished'] ?? false) as bool,
+        onShelf: (j['on_shelf'] ?? false) as bool,
         chapters: ((j['chapters'] as List?) ?? const [])
             .map((e) => StoreChapter.fromJson(e as Map<String, dynamic>))
             .toList(),

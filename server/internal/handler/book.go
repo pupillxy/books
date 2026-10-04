@@ -1,13 +1,22 @@
 package handler
 
 import (
+	"archive/zip"
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"html"
+	"io"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -16,6 +25,7 @@ import (
 	"xiaoshuo/internal/fanqie"
 	"xiaoshuo/internal/middleware"
 	"xiaoshuo/internal/scanner"
+	"xiaoshuo/internal/tnd"
 	"xiaoshuo/internal/unidbg"
 )
 
@@ -27,6 +37,35 @@ type BookHandler struct {
 	// BridgeURL 真机签名桥地址（XS_APP_BRIDGE_URL，空=禁用）：unidbg 被内容风控时的
 	// 最终兜底——桥让真番茄 App 自己签名代发正文，风控无法区分
 	BridgeURL string
+	// TND 按需单章兜底通道（XS_TND_URL）：范围任务拉当前章+下一章，产物落 BooksDir
+	TND      *tnd.Client
+	BooksDir string // TND 产物目录（= XS_DOWNLOAD_DIR，server 与 TND 共享挂载）
+
+	// 通道健康记忆：某通道连续失败后 10 分钟内直接跳过，避免每章白等超时
+	// （设备被标时 unidbg 每次白耗 10s、桥下线时每次白耗 12~24s）
+	healthMu        sync.Mutex
+	uniDeadUntil    time.Time
+	bridgeDeadUntil time.Time
+}
+
+const channelCooldown = 10 * time.Minute
+
+func (h *BookHandler) markDead(dead *time.Time) {
+	h.healthMu.Lock()
+	*dead = time.Now().Add(channelCooldown)
+	h.healthMu.Unlock()
+}
+
+func (h *BookHandler) markAlive(dead *time.Time) {
+	h.healthMu.Lock()
+	*dead = time.Time{}
+	h.healthMu.Unlock()
+}
+
+func (h *BookHandler) isDead(dead *time.Time) bool {
+	h.healthMu.Lock()
+	defer h.healthMu.Unlock()
+	return time.Now().Before(*dead)
 }
 
 func (h *BookHandler) List(c *gin.Context) {
@@ -118,7 +157,7 @@ func (h *BookHandler) Chapter(c *gin.Context) {
 			nextSrc = nxSrc
 		}
 	}
-	res, ferr := h.fetchOnlineContents(book.FanqieID, ids, titles)
+	res, ferr := h.fetchOnlineContents(book.FanqieID, idx, ids, titles)
 	content, ctitle := res[srcID], ch.Title
 	if len([]rune(content)) < 50 {
 		log.Printf("[store] 在线正文失败 book=%d idx=%d locked=%v: %v", id, idx, errors.Is(ferr, fanqie.ErrChapterLocked), ferr)
@@ -138,22 +177,35 @@ func (h *BookHandler) Chapter(c *gin.Context) {
 	c.JSON(http.StatusOK, ch)
 }
 
-// fetchOnlineContents 在线正文：App 协议优先（unidbg 批量，匿名设备可读
-// 「网页仅试读」的章），未命中走真机签名桥，最后网页端兜底。
-// 整体预算 40s：三通道全挂时也要在 App 60s 接收超时前返回可提示的错误。
-// 单章端点高频必触发设备风控，已弃用（10/03 事故）。titles 用于剥掉
-// unidbg txtContent 首行的章节名；ferr 为网页端的最后一个错误（402 判定用）。
-func (h *BookHandler) fetchOnlineContents(fid string, srcIDs []string, titles map[string]string) (map[string]string, error) {
+// uniChannelEnabled 临时开关：unidbg 设备被内容风控标记期间（响应格式异常，
+// 冷却 >1h 且反复）关闭该通道，正文直接走桥/TND，省掉每章 ~10s 的必败重试。
+// 换设备或确认冷却自愈后改回 true（10/04）。
+const uniChannelEnabled = false
+
+// bridgeChannelEnabled / webChannelEnabled 临时开关（10/05）：桥只在 PC 开机且
+// 模拟器常驻时可用，其余时间每个健康记忆窗口（10min）到期后的第一笔正文都要
+// 白等 12s 拨号超时；网页端对「仅试读」章必败且慢。当前正文只走 TND（③），
+// 恢复对应通道时改回 true。
+const bridgeChannelEnabled = false
+const webChannelEnabled = false
+
+// fetchOnlineContents 在线正文：当前只走 TND 范围任务（读全量正文、无设备风控
+// 压力，实测 ~5s/次）。App 协议/真机签名桥/网页端三个通道临时关闭（见上方
+// const 开关）。整体预算 50s（App 接收超时 60s）。titles 用于剥掉 unidbg
+// txtContent 首行的章节名；ferr 为 TND 的最后一个错误（402 日志判定用）。
+func (h *BookHandler) fetchOnlineContents(fid string, firstIdx int, srcIDs []string, titles map[string]string) (map[string]string, error) {
 	out := map[string]string{}
 	var ferr error
-	deadline := time.Now().Add(40 * time.Second)
+	deadline := time.Now().Add(50 * time.Second)
 
 	// ① App 协议批量（当前章+下一章一请求；设备被标记时在此失败，静默降级）
-	if h.UNI != nil && h.UNI.Enabled() {
+	if uniChannelEnabled && h.UNI != nil && h.UNI.Enabled() && !h.isDead(&h.uniDeadUntil) {
 		res, err := h.UNI.ChapterContentsBatch(fid, srcIDs)
 		if err != nil {
-			log.Printf("[uni] 批量正文失败 fid=%s n=%d: %v", fid, len(srcIDs), err)
+			log.Printf("[uni] 批量正文失败 fid=%s n=%d: %v（10 分钟内跳过）", fid, len(srcIDs), err)
+			h.markDead(&h.uniDeadUntil)
 		} else {
+			h.markAlive(&h.uniDeadUntil)
 			for sid, txt := range res {
 				txt = strings.TrimPrefix(txt, titles[sid]+"\n")
 				if len([]rune(txt)) >= 50 {
@@ -164,20 +216,49 @@ func (h *BookHandler) fetchOnlineContents(fid string, srcIDs []string, titles ma
 	}
 
 	// ② 真机签名桥（App 代签代发，风控无法区分；unidbg 被打标时的救命通道）
-	for _, sid := range srcIDs {
-		if _, ok := out[sid]; ok || h.BridgeURL == "" || time.Now().After(deadline) {
-			continue
+	if bridgeChannelEnabled && h.BridgeURL != "" && !h.isDead(&h.bridgeDeadUntil) {
+		for i, sid := range srcIDs {
+			if _, ok := out[sid]; ok || time.Now().After(deadline) {
+				continue
+			}
+			txt, err := h.bridgeChapter(fid, sid, titles[sid])
+			if err != nil {
+				log.Printf("[bridge] 正文兜底失败 sid=%s: %v（10 分钟内跳过）", sid, err)
+				h.markDead(&h.bridgeDeadUntil)
+				break // 桥挂了其余 sid 也会挂，把时间留给后面的通道
+			}
+			if i == 0 {
+				h.markAlive(&h.bridgeDeadUntil)
+			}
+			out[sid] = txt
 		}
-		txt, err := h.bridgeChapter(fid, sid, titles[sid])
-		if err != nil {
-			log.Printf("[bridge] 正文兜底失败 sid=%s: %v", sid, err)
-			continue
-		}
-		out[sid] = txt
 	}
 
-	// ③ 网页端兜底（免费章可用；「付费仅预览」章在网页端判定锁定）
-	if h.FQ != nil {
+	// ③ TND 范围任务（读全量正文、走官方接口无设备风控压力，8~15s/次）；
+	// unidbg 关闭期间它就是主力通道，网页端降为最后兜底
+	if h.TND != nil && h.TND.Enabled() && len(out) < len(srcIDs) && time.Now().Before(deadline) {
+		need := make([]string, 0, len(srcIDs))
+		for _, sid := range srcIDs {
+			if _, ok := out[sid]; !ok {
+				need = append(need, sid)
+			}
+		}
+		txts, err := h.tndChapters(fid, firstIdx, srcIDs, need, deadline)
+		if err != nil {
+			log.Printf("[tnd] 单章兜底失败 fid=%s need=%d: %v", fid, len(need), err)
+			if ferr == nil {
+				ferr = err
+			}
+		} else {
+			log.Printf("[tnd] 单章兜底成功 fid=%s got=%d", fid, len(txts))
+			for sid, txt := range txts {
+				out[sid] = txt
+			}
+		}
+	}
+
+	// ④ 网页端最后兜底（免费章可用；「付费仅预览」章在网页端判定锁定）
+	if webChannelEnabled && h.FQ != nil {
 		for _, sid := range srcIDs {
 			if _, ok := out[sid]; ok || time.Now().After(deadline) {
 				continue
@@ -193,6 +274,183 @@ func (h *BookHandler) fetchOnlineContents(fid string, srcIDs []string, titles ma
 		}
 	}
 	return out, ferr
+}
+
+// tndChapters 经 TND 范围任务拉取缺失章节并解析产物。from/to 按 TND 的
+// 1 基目录序；产物优先 status.json（item_id 精确匹配），回退最新 epub 按序。
+func (h *BookHandler) tndChapters(fid string, firstIdx int, srcIDs []string, need []string, deadline time.Time) (map[string]string, error) {
+	// 缺失章在 srcIDs 里的位置 → TND 1 基目录序（srcIDs[0] = firstIdx+1 话/章）
+	posSet := map[int]bool{}
+	for _, sid := range need {
+		for k, s := range srcIDs {
+			if s == sid {
+				posSet[k] = true
+			}
+		}
+	}
+	minK, maxK := len(srcIDs)-1, 0
+	for k := range posSet {
+		if k < minK {
+			minK = k
+		}
+		if k > maxK {
+			maxK = k
+		}
+	}
+	from, to := firstIdx+minK+1, firstIdx+maxK+1
+
+	jobStart := time.Now()
+	jid, err := h.TND.CreateRangeJob(fid, from, to)
+	if err != nil {
+		return nil, err
+	}
+	wait := time.Until(deadline)
+	if wait > 35*time.Second {
+		wait = 35 * time.Second
+	}
+	state, err := h.TND.WaitJob(jid, wait)
+	if err != nil {
+		return nil, err
+	}
+	if state != "done" {
+		return nil, fmt.Errorf("TND 任务 %d 结束态 %s", jid, state)
+	}
+
+	// 产物 A：status.json 的 downloaded[item_id] = [章名, HTML]，item_id 精确匹配
+	res := map[string]string{}
+	var sj struct {
+		Downloaded map[string][]string `json:"downloaded"`
+	}
+	if raw, rerr := os.ReadFile(filepath.Join(h.BooksDir, fid, "status.json")); rerr == nil {
+		if json.Unmarshal(raw, &sj) == nil {
+			for _, sid := range need {
+				if pair := sj.Downloaded[sid]; len(pair) >= 2 {
+					if txt := stripHTML(pair[1]); len([]rune(txt)) >= 50 {
+						res[sid] = txt
+					}
+				}
+			}
+		}
+	}
+	if len(res) == len(need) {
+		return res, nil
+	}
+
+	// 产物 B：任务窗口内新生成的《书名》.epub，OEBPS/chapter_NNN.xhtml 按范围序排列
+	epub, err := newestEpubSince(h.BooksDir, jobStart.Add(-2*time.Second))
+	if err != nil {
+		if len(res) > 0 {
+			return res, nil
+		}
+		return nil, err
+	}
+	chs, err := epubChapters(epub)
+	if err != nil {
+		if len(res) > 0 {
+			return res, nil
+		}
+		return nil, err
+	}
+	for k, sid := range srcIDs {
+		if !posSet[k] {
+			continue
+		}
+		i := (firstIdx + k) - from // epub 内的序号
+		if i < 0 || i >= len(chs) {
+			continue
+		}
+		if txt := stripHTML(chs[i]); len([]rune(txt)) >= 50 {
+			if _, ok := res[sid]; !ok {
+				res[sid] = txt
+			}
+		}
+	}
+	if len(res) == 0 {
+		return nil, fmt.Errorf("TND 产物中未找到 %d 章（status.json/epub 均未命中）", len(need))
+	}
+	return res, nil
+}
+
+var (
+	reHTMLBlock = regexp.MustCompile(`(?i)</?(p|h[1-6]|div|blk|br)[^>]*>`)
+	reHTMLAny   = regexp.MustCompile(`<[^>]+>`)
+	reVoiceMark = regexp.MustCompile(`\{!--\s*PGC_VOICE:.*?--\}`)
+	reBlankLine = regexp.MustCompile(`\n{3,}`)
+)
+
+// stripHTML 番茄网页格式正文 → 纯文本（块级标签转换行，剥其余标签，解实体）
+func stripHTML(s string) string {
+	s = reVoiceMark.ReplaceAllString(s, "")
+	s = reHTMLBlock.ReplaceAllString(s, "\n")
+	s = reHTMLAny.ReplaceAllString(s, "")
+	s = html.UnescapeString(s)
+	s = reBlankLine.ReplaceAllString(s, "\n\n")
+	return strings.TrimSpace(s)
+}
+
+// newestEpubSince 找目录里 mtime 晚于 since 的最新 epub（TND 任务刚生成的）
+func newestEpubSince(dir string, since time.Time) (string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", err
+	}
+	var best string
+	var bestAt time.Time
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), ".epub") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || info.ModTime().Before(since) {
+			continue
+		}
+		if info.ModTime().After(bestAt) {
+			best, bestAt = filepath.Join(dir, e.Name()), info.ModTime()
+		}
+	}
+	if best == "" {
+		return "", fmt.Errorf("目录中无新生成的 epub")
+	}
+	return best, nil
+}
+
+// epubChapters 解开 epub，按 chapter_NNN 序返回各章 xhtml 原文（未剥标签）
+func epubChapters(path string) ([]string, error) {
+	zr, err := zip.OpenReader(path)
+	if err != nil {
+		return nil, err
+	}
+	defer zr.Close()
+	reCh := regexp.MustCompile(`chapter_(\d+)\.xhtml$`)
+	type numbered struct {
+		n int
+		i int
+	}
+	var nums []numbered
+	for i, f := range zr.File {
+		if m := reCh.FindStringSubmatch(f.Name); m != nil {
+			n, _ := strconv.Atoi(m[1])
+			nums = append(nums, numbered{n: n, i: i})
+		}
+	}
+	if len(nums) == 0 {
+		return nil, fmt.Errorf("epub 内无 chapter_NNN.xhtml")
+	}
+	sort.Slice(nums, func(a, b int) bool { return nums[a].n < nums[b].n })
+	out := make([]string, 0, len(nums))
+	for _, x := range nums {
+		rc, err := zr.File[x.i].Open()
+		if err != nil {
+			return nil, err
+		}
+		raw, err := io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, string(raw))
+	}
+	return out, nil
 }
 
 // bridgeChapter 经真机签名桥取单章正文（App 代签代发 + Java 解密，桥内完成）

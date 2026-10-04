@@ -695,22 +695,31 @@ const DefaultFeedCellID = "7011478717935386631"
 func (c *Client) FeedPage(cellID, planID string, offset int) ([]FeedBook, int, bool, error) {
 	q := fmt.Sprintf("change_type=0&limit=10&cell_id=%s&offset=%d&client_req_type=2&algo_type=167&tab_type=2&plan_id=%s",
 		url.QueryEscape(cellID), offset, url.QueryEscape(planID))
-	data, err := c.fetchApp("/reading/bookapi/bookmall/cell/change/v", q)
+	return cellChangeFeed(c, q, parseCellFeedPage, func(b []FeedBook) bool { return len(b) == 0 })
+}
+
+// cellChangeFeed 拉取 cell/change/v 并解析，空页立即重试一次。上游个性化会话
+// 冷启动时偶发 code=0 空页（10/04 实测：书城「猜你喜欢」空闲后首拉必空、
+// 秒级重试即恢复；空页原样透传会让客户端以 has_more=false 卡死成永久空白，
+// 只能手动下拉恢复），重试仍空才按空页返回。
+func cellChangeFeed[T any](c *Client, query string, parse func(json.RawMessage) (T, int, bool, error), isEmpty func(T) bool) (T, int, bool, error) {
+	books, next, more, err := cellChangeOnce(c, query, parse)
+	if err == nil && isEmpty(books) {
+		time.Sleep(800 * time.Millisecond)
+		if b2, n2, m2, err2 := cellChangeOnce(c, query, parse); err2 == nil && !isEmpty(b2) {
+			return b2, n2, m2, nil
+		}
+	}
+	return books, next, more, err
+}
+
+func cellChangeOnce[T any](c *Client, query string, parse func(json.RawMessage) (T, int, bool, error)) (T, int, bool, error) {
+	data, err := c.fetchApp("/reading/bookapi/bookmall/cell/change/v", query)
 	if err != nil {
-		return nil, 0, false, err
+		var zero T
+		return zero, 0, false, err
 	}
-	var env struct {
-		HasMore    bool `json:"has_more"`
-		NextOffset int  `json:"next_offset"`
-	}
-	if err := json.Unmarshal(data, &env); err != nil {
-		return nil, 0, false, fmt.Errorf("feed 翻页解析: %w", err)
-	}
-	books, perr := parseCellViewBooks(data)
-	if perr != nil {
-		books = nil // 本页全是视频卡等无书籍内容：合法空页
-	}
-	return books, env.NextOffset, env.HasMore, nil
+	return parse(data)
 }
 
 // DefaultComicFeedCellID 漫画频道 feed cell 的服务端内容 ID（tab_type=9，10/04 实测跨设备稳定）
@@ -726,11 +735,7 @@ func (c *Client) NovelFeedPage(selected string, offset int) ([]FeedBook, int, bo
 	if selected != "" {
 		q += "&selected_items=" + url.QueryEscape(selected) + "&unlimited_selector_change_type=2"
 	}
-	data, err := c.fetchApp("/reading/bookapi/bookmall/cell/change/v", q)
-	if err != nil {
-		return nil, 0, false, err
-	}
-	return parseCellFeedPage(data)
+	return cellChangeFeed(c, q, parseCellFeedPage, func(b []FeedBook) bool { return len(b) == 0 })
 }
 
 // parseCellFeedPage 解析 cell/change 翻页响应：游标 + 展开全部书卡
@@ -770,10 +775,11 @@ type ComicCard struct {
 func (c *Client) ComicFeedPage(offset int) ([]ComicCard, int, bool, error) {
 	q := fmt.Sprintf("change_type=0&limit=20&cell_id=%s&offset=%d&client_req_type=2&tab_type=9&plan_id=0",
 		url.QueryEscape(DefaultComicFeedCellID), offset)
-	data, err := c.fetchApp("/reading/bookapi/bookmall/cell/change/v", q)
-	if err != nil {
-		return nil, 0, false, err
-	}
+	return cellChangeFeed(c, q, parseComicFeedPage, func(cards []ComicCard) bool { return len(cards) == 0 })
+}
+
+// parseComicFeedPage 解析漫画频道翻页响应：游标 + 展开全部漫画卡
+func parseComicFeedPage(data json.RawMessage) ([]ComicCard, int, bool, error) {
 	var env struct {
 		HasMore    bool `json:"has_more"`
 		NextOffset int  `json:"next_offset"`
@@ -781,8 +787,7 @@ func (c *Client) ComicFeedPage(offset int) ([]ComicCard, int, bool, error) {
 	if err := json.Unmarshal(data, &env); err != nil {
 		return nil, 0, false, fmt.Errorf("comic feed 解析: %w", err)
 	}
-	cards := parseComicCards(data)
-	return cards, env.NextOffset, env.HasMore, nil
+	return parseComicCards(data), env.NextOffset, env.HasMore, nil
 }
 
 // parseComicCards 展开 cell/change 响应里的漫画卡（book_data 可能挂在 cell_view
@@ -833,8 +838,7 @@ func derefOrEmpty(s *string) string {
 	}
 	return *s
 }
-
-// ComicDetailInfo 漫画详情（comic_tab/comic_detail/v 的 comic_data，10/04 实测）
+（comic_tab/comic_detail/v 的 comic_data，10/04 实测）
 type ComicDetailInfo struct {
 	BookID      string
 	BookName    string

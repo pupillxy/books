@@ -47,3 +47,7 @@ _reference/fqemu/capture_xiaoshuo_1003/*.apk
 _reference/fqnovel-unidbg-src/run-avd/
 _reference/frida-server*
 _reference/fs*.xz
+
+# 1004 档案：apk 与 live token 不入库
+_reference/fqemu/capture_xiaoshuo_1004/*.apk
+_reference/fqemu/capture_xiaoshuo_1004/token.txt

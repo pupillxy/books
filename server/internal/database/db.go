@@ -86,6 +86,15 @@ func migrate(db *sql.DB) error {
 			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
+		// 猜你喜欢瀑布流的持久缓存（last-known-good）：上游个性化会话冷启动会返回
+		// 软空页，有兜底缓存后初始加载直接回放、上游失败也回退陈旧值，App 端不再报错
+		`CREATE TABLE IF NOT EXISTS feed_cache (
+			key         TEXT PRIMARY KEY,
+			items       TEXT NOT NULL,
+			next_offset INTEGER NOT NULL DEFAULT 0,
+			has_more    INTEGER NOT NULL DEFAULT 0,
+			updated_at  INTEGER NOT NULL DEFAULT 0
+		)`,
 
 		// 旧库补列（chapters.src_id 存番茄在线章节 ID，用于按需拉正文回填）
 		`ALTER TABLE books ADD COLUMN source TEXT NOT NULL DEFAULT 'local'`,

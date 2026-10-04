@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/api.dart';
 import '../core/mo_theme.dart';
 import '../core/session.dart';
+import 'register_page.dart';
 
 // 「墨笺」设计 Token 已抽至 core/mo_theme.dart，此处直接复用
 
@@ -77,6 +78,22 @@ class _LoginPageState extends ConsumerState<LoginPage> {
       ..showSnackBar(SnackBar(content: Text(msg), behavior: SnackBarBehavior.floating));
   }
 
+  // 注册入口：优先用表单里现填的地址，没填就用上次连接过的
+  void _openRegister() {
+    final host = _host.text.trim();
+    final port = _port.text.trim();
+    var url = ref.read(sessionProvider).serverUrl;
+    if (host.isNotEmpty && port.isNotEmpty) {
+      url = '${_https ? 'https' : 'http'}://$host:$port';
+    }
+    if (url.isEmpty) {
+      _toast('请先填写服务器地址和端口');
+      return;
+    }
+    Navigator.of(context)
+        .push(MaterialPageRoute(builder: (_) => RegisterPage(serverUrl: url)));
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -148,7 +165,7 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                           children: [
                             Expanded(
                               flex: 14,
-                              child: _Field(
+                              child: AuthField(
                                 label: '地址',
                                 icon: Icons.grid_view_rounded,
                                 controller: _host,
@@ -159,7 +176,7 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                             const SizedBox(width: 12),
                             Expanded(
                               flex: 10,
-                              child: _Field(
+                              child: AuthField(
                                 label: '端口',
                                 controller: _port,
                                 hintText: '8080',
@@ -169,14 +186,14 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                           ],
                         ),
                         const SizedBox(height: 15),
-                        _Field(
+                        AuthField(
                           label: '用户名',
                           icon: Icons.person_outline,
                           controller: _username,
                           hintText: 'admin',
                         ),
                         const SizedBox(height: 15),
-                        _Field(
+                        AuthField(
                           label: '密码',
                           icon: Icons.lock_outline,
                           controller: _password,
@@ -285,6 +302,16 @@ class _LoginPageState extends ConsumerState<LoginPage> {
                             ),
                           ),
                         ),
+
+                        // ---- 注册入口 ----
+                        TextButton(
+                          onPressed: _busy ? null : _openRegister,
+                          child: const Text('注册新用户',
+                              style: TextStyle(
+                                  fontSize: 13.5,
+                                  color: MoStyle.muted,
+                                  letterSpacing: 0.3)),
+                        ),
                       ],
                     ),
                   ),
@@ -307,9 +334,10 @@ class _LoginPageState extends ConsumerState<LoginPage> {
   }
 }
 
-/// 设计稿 .field：label + 白底圆角输入框（聚焦时朱砂边框 + 光晕）
-class _Field extends StatefulWidget {
-  const _Field({
+/// 登录/注册共用输入框（设计稿 .field）：label + 白底圆角输入框（聚焦时朱砂边框 + 光晕）
+class AuthField extends StatefulWidget {
+  const AuthField({
+    super.key,
     required this.label,
     required this.controller,
     this.icon,
@@ -330,10 +358,10 @@ class _Field extends StatefulWidget {
   final ValueChanged<String>? onSubmitted;
 
   @override
-  State<_Field> createState() => _FieldState();
+  State<AuthField> createState() => _AuthFieldState();
 }
 
-class _FieldState extends State<_Field> {
+class _AuthFieldState extends State<AuthField> {
   bool _focused = false;
 
   @override

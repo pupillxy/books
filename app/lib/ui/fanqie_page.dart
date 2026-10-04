@@ -97,7 +97,8 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
   }
 
   // ── 猜你喜欢瀑布流（官方 cell/change 翻页；offset 由上游 next_offset 驱动）──
-  Future<void> _loadGuessPage({bool reset = false}) async {
+  // forceRefresh：下拉刷新/手动重试时置 true，服务端绕过两级缓存强制回源
+  Future<void> _loadGuessPage({bool reset = false, bool forceRefresh = false}) async {
     if (_guessLoading) return;
     if (!reset && !_guessHasMore) return;
     setState(() {
@@ -111,7 +112,10 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
     });
     try {
       final r = await _api.storeAppFeedPage(
-          cellId: '', planId: '', offset: reset ? 0 : _guessOffset);
+          cellId: '',
+          planId: '',
+          offset: reset ? 0 : _guessOffset,
+          forceRefresh: forceRefresh);
       if (!mounted) return;
       setState(() {
         _guessBooks = reset ? r.books : [..._guessBooks, ...r.books];
@@ -237,7 +241,7 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
         await _loadComicPage(reset: true);
       default:
         _ensureBoard(_boardKeys[_rankTabIdx]!);
-        await _loadGuessPage(reset: true);
+        await _loadGuessPage(reset: true, forceRefresh: true);
     }
   }
 
@@ -303,6 +307,7 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
               ),
             ),
           ),
+
         ],
       ),
     );
@@ -610,7 +615,7 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
                           fontSize: 12.5,
                           color: Theme.of(context).colorScheme.outline))),
               TextButton(
-                  onPressed: () => _loadGuessPage(reset: true),
+                  onPressed: () => _loadGuessPage(reset: true, forceRefresh: true),
                   child: const Text('重试', style: TextStyle(fontSize: 12.5))),
             ]));
       }

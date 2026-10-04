@@ -9,7 +9,8 @@ import 'store_comic_reader_page.dart';
 import 'widgets.dart';
 
 /// 漫画详情：封面 + 信息 + 简介 + 话列表（官方协议 comic_tab/comic_detail +
-/// directory/all_items，10/04 定案）。漫画不走入库/书架，点话直接看。
+/// directory/all_items，10/04 定案）。阅读实时回放不下载；加入书架在阅读器内
+/// 悬浮按钮完成（server 轻量入库 books，source=comic）。
 class StoreComicDetailPage extends ConsumerStatefulWidget {
   const StoreComicDetailPage({super.key, required this.bookId, required this.title});
 
@@ -52,7 +53,8 @@ class _StoreComicDetailPageState extends ConsumerState<StoreComicDetailPage> {
             bookId: widget.bookId,
             title: _detail?.title ?? widget.title,
             chapters: chapters,
-            initialIndex: index)));
+            initialIndex: index,
+            onShelf: _detail?.onShelf ?? false)));
   }
 
   @override

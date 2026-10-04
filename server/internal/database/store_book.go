@@ -26,8 +26,15 @@ func (s *DBStore) GetBookByFanqieID(fid string) (*model.Book, error) {
 		`SELECT `+bookCols+` FROM books WHERE fanqie_id = ?`, fid))
 }
 
+// GetComicByFanqieID 按番茄漫画 ID 查入库的漫画行（与小说按 source 隔离）
+func (s *DBStore) GetComicByFanqieID(fid string) (*model.Book, error) {
+	return scanBook(s.QueryRow(
+		`SELECT `+bookCols+` FROM books WHERE fanqie_id = ? AND source = 'comic'`, fid))
+}
+
 func (s *DBStore) ListBooks(keyword string, offset, limit int) ([]*model.Book, int, error) {
-	where := `WHERE 1=1`
+	// 书库只列有本地内容的书（漫画仅元数据入库，进了会跳到错误的文字阅读器）
+	where := `WHERE source != 'comic'`
 	args := []any{}
 	if keyword != "" {
 		where += ` AND (title LIKE ? OR author LIKE ?)`
@@ -106,6 +113,27 @@ func (s *DBStore) UpsertOnlineBook(b *model.Book) (int64, error) {
 	return res.LastInsertId()
 }
 
+// UpsertComicBook 漫画轻量入库：只有元数据，无本地文件、无章节正文（阅读走 unidbg
+// 实时代理）；入库后即可复用通用书架/阅读进度链路，source=comic 与小说隔离
+func (s *DBStore) UpsertComicBook(b *model.Book) (int64, error) {
+	existing, err := s.GetComicByFanqieID(b.FanqieID)
+	if err == nil {
+		_, err = s.Exec(`UPDATE books SET title=?, author=?, intro=?, cover=?, total_chapters=?, finished=? WHERE id=?`,
+			b.Title, b.Author, b.Intro, b.Cover, b.TotalChapters, b.Finished, existing.ID)
+		return existing.ID, err
+	}
+	if err != ErrNotFound {
+		return 0, err
+	}
+	res, err := s.Exec(`INSERT INTO books (title, author, intro, cover, fanqie_id, source, status, file_path, total_chapters, finished)
+		VALUES (?, ?, ?, ?, ?, 'comic', 'online', ?, ?, ?)`,
+		b.Title, b.Author, b.Intro, b.Cover, b.FanqieID, "comic:"+b.FanqieID, b.TotalChapters, b.Finished)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
 // SetBookStatus 更新书籍状态（downloading→ready 等）
 func (s *DBStore) SetBookStatus(bookID int64, status string) error {
 	_, err := s.Exec(`UPDATE books SET status=? WHERE id=?`, status, bookID)
@@ -125,9 +153,9 @@ func (s *DBStore) SetBookMeta(bookID int64, title, author, cover, intro string) 
 	return err
 }
 
-// ListUnfinishedFanqieBooks 追更对象：绑定了番茄 ID 且未完结的书
+// ListUnfinishedFanqieBooks 追更对象：绑定了番茄 ID 且未完结的书（不含漫画）
 func (s *DBStore) ListUnfinishedFanqieBooks() ([]*model.Book, error) {
-	rows, err := s.Query(`SELECT ` + bookCols + ` FROM books WHERE fanqie_id != '' AND finished = 0`)
+	rows, err := s.Query(`SELECT ` + bookCols + ` FROM books WHERE fanqie_id != '' AND source != 'comic' AND finished = 0`)
 	if err != nil {
 		return nil, err
 	}

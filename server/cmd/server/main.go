@@ -70,13 +70,18 @@ func main() {
 	tndClient := tnd.New(cfg.TNDURL, cfg.TNDPassword)
 	uniClient := unidbg.New(cfg.UnidbgURL) // unidbg 签名服务：番茄海外版 SO 自算签名
 	book := &handler.BookHandler{DB: store, Scanner: sc, FQ: fqClient, UNI: uniClient,
-		BridgeURL: os.Getenv("XS_APP_BRIDGE_URL")} // 真机签名桥：unidbg 被内容风控时的兜底
+		BridgeURL: os.Getenv("XS_APP_BRIDGE_URL"), // 真机签名桥：unidbg 被内容风控时的兜底
+		TND:       tndClient, BooksDir: cfg.DownloadDir} // TND 范围任务按需单章兜底（books 共享挂载）
 	shelf := &handler.ShelfHandler{DB: store}
 	progress := &handler.ProgressHandler{DB: store}
-	storeH := &handler.StoreHandler{DB: store, FQ: fqClient, TND: tndClient, UNI: uniClient}
+	storeH := &handler.StoreHandler{DB: store, FQ: fqClient, TND: tndClient, UNI: uniClient, Secret: cfg.JWTSecret}
 	handler.StartUpdater(storeH) // 每日追更：未完结的番茄书自动补章
 
 	api.POST("/auth/login", auth.Login)
+	api.POST("/auth/register", auth.Register)
+
+	// 漫画图片代理：公开端点但带 HMAC 签名参数（签名即鉴权，同短剧 stream/cover）
+	api.GET("/store/comicimg", storeH.ComicImg)
 
 	authed := api.Group("/", middleware.Auth(cfg.JWTSecret))
 	authed.GET("/me", auth.Me)
@@ -93,6 +98,8 @@ func main() {
 	authed.GET("/store/comicfeed", storeH.ComicFeed)              // 漫画频道瀑布流（cell/change tab_type=9）
 	authed.GET("/store/comics/:bookID", storeH.ComicDetail)       // 漫画详情+话列表
 	authed.GET("/store/comics/:bookID/chapters/:itemID", storeH.ComicChapter) // 漫画单话图片
+	authed.POST("/store/comics/:bookID/shelf", storeH.ComicShelfAdd)   // 漫画加入书架（轻量入库）
+	authed.DELETE("/store/comics/:bookID/shelf", storeH.ComicShelfRemove) // 漫画移出书架
 	authed.GET("/store/search", storeH.Search)                     // 书城搜索（网页端）	authed.GET("/store/library/categories", storeH.LibraryCategories) // 书库分类树
 	authed.GET("/store/library/books", storeH.LibraryBooks)          // 书库筛选列表
 	authed.GET("/store/books/:fanqieID", storeH.BookDetail)

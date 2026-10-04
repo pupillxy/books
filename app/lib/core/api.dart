@@ -85,6 +85,24 @@ class ApiClient {
     }
   }
 
+  /// 注册（独立请求，不依赖已有 token）；成功后走 login 建立会话
+  static Future<void> register(String serverUrl, String username, String password) async {
+    final dio = Dio(BaseOptions(
+      baseUrl: _normalize(serverUrl),
+      connectTimeout: const Duration(seconds: 8),
+    ));
+    try {
+      await dio.post('/api/auth/register', data: {
+        'username': username,
+        'password': password,
+      });
+    } on DioException catch (e) {
+      throw _fromDio(e);
+    } catch (_) {
+      throw ApiException('注册失败，请检查服务器地址');
+    }
+  }
+
   Future<T> _get<T>(String path, {Map<String, dynamic>? query}) async {
     try {
       final r = await _dio.get(path, queryParameters: query);
@@ -238,14 +256,20 @@ class ApiClient {
         .toList();
   }
 
-  /// 猜你喜欢瀑布流翻页（cell 参数来自 appfeed 分区下发）
+  /// 猜你喜欢瀑布流翻页（cell 参数来自 appfeed 分区下发）。
+  /// forceRefresh=true（下拉刷新/手动重试）时服务端绕过两级缓存强制回源并回写。
   Future<FeedPageResult> storeAppFeedPage({
     required String cellId,
     required String planId,
     required int offset,
+    bool forceRefresh = false,
   }) async {
-    final j = await _get<Map<String, dynamic>>('/api/store/appfeed/page',
-        query: {'cell_id': cellId, 'plan_id': planId, 'offset': '$offset'});
+    final j = await _get<Map<String, dynamic>>('/api/store/appfeed/page', query: {
+      'cell_id': cellId,
+      'plan_id': planId,
+      'offset': '$offset',
+      if (forceRefresh) 'refresh': '1',
+    });
     return FeedPageResult(
       books: ((j['books'] as List?) ?? const [])
           .map((e) => FeedBook.fromJson(e as Map<String, dynamic>))
@@ -302,6 +326,16 @@ class ApiClient {
       }
     }
     return ComicChapterContent.fromJson(j);
+  }
+
+  /// 漫画加入书架（server 轻量入库 books 后复用通用书架）
+  Future<void> storeComicShelfAdd(String bookId) async {
+    await _send<Map<String, dynamic>>('POST', '/api/store/comics/$bookId/shelf');
+  }
+
+  /// 漫画移出书架（未入库视为已移除，幂等）
+  Future<void> storeComicShelfRemove(String bookId) async {
+    await _send<Map<String, dynamic>>('DELETE', '/api/store/comics/$bookId/shelf');
   }
 
   /// 书库分类树（gender: '1'=男生 '0'=女生，分组 label: 主分类/主题/角色/情节）

@@ -11,6 +11,7 @@ import '../models.dart';
 import 'book_content_search_page.dart';
 import 'book_detail_page.dart';
 import 'reader_page.dart';
+import 'store_comic_detail_page.dart';
 import 'store_page.dart';
 import 'widgets.dart';
 
@@ -70,6 +71,14 @@ class _BookshelfPageState extends ConsumerState<BookshelfPage>
   }
 
   Future<void> _openDetail(Book book) async {
+    // 漫画行（source=comic）：详情/阅读走漫画接口，不能进文字书详情
+    if (book.isComic) {
+      await Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => StoreComicDetailPage(bookId: book.fanqieId, title: book.title),
+      ));
+      _load();
+      return;
+    }
     await Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => BookDetailPage(book: book),
     ));
@@ -77,6 +86,11 @@ class _BookshelfPageState extends ConsumerState<BookshelfPage>
   }
 
   void _openReader(ShelfItem item) {
+    // 漫画没有文字阅读器，进漫画详情选话阅读
+    if (item.book.isComic) {
+      _openDetail(item.book);
+      return;
+    }
     Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => ReaderPage(book: item.book, initialChapter: item.progressChapterIdx),
     ));
@@ -257,7 +271,7 @@ class _BookshelfPageState extends ConsumerState<BookshelfPage>
             ListTile(
               leading: const Icon(Icons.play_arrow_rounded),
               title: Text('继续阅读：${item.book.title}'),
-              subtitle: Text('第 ${item.progressChapterIdx + 1} 章'),
+              subtitle: Text('第 ${item.progressChapterIdx + 1} ${item.book.isComic ? '话' : '章'}'),
               onTap: () {
                 Navigator.pop(sheet);
                 _openReader(item);
@@ -430,6 +444,7 @@ class _ContinueCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final progress = item.progressChapterIdx + 1;
     final total = item.book.totalChapters;
+    final unit = item.book.isComic ? '话' : '章';
     return Padding(
       padding: const EdgeInsets.fromLTRB(18, 14, 18, 0),
       child: InkWell(
@@ -493,7 +508,7 @@ class _ContinueCard extends StatelessWidget {
                                   color: Colors.white)),
                           const SizedBox(height: 6),
                           Text(
-                            total > 0 ? '第 $progress / $total 章' : '第 $progress 章',
+                            total > 0 ? '第 $progress / $total $unit' : '第 $progress $unit',
                             style: TextStyle(
                                 fontSize: 11.5,
                                 color: Colors.white.withValues(alpha: 0.85)),
@@ -616,7 +631,9 @@ class _ShelfCard extends StatelessWidget {
           ),
           const SizedBox(height: 2),
           Text(
-            started ? '读到第 ${item.progressChapterIdx + 1} 章' : '未开始读',
+            started
+                ? '读到第 ${item.progressChapterIdx + 1} ${item.book.isComic ? '话' : '章'}'
+                : '未开始读',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: TextStyle(

@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -62,6 +63,7 @@ type StoreHandler struct {
 	// 漫画详情+话列表缓存
 	comicDetMu    sync.Mutex
 	comicDetCache map[string]comicDetCacheEntry
+
 }
 
 const rankBatchTTL = 2 * time.Minute
@@ -247,7 +249,9 @@ func (h *StoreHandler) markBooks(books []fanqie.LibraryBook) {
 	}
 }
 
-// Search 书城搜索：App 协议优先（unidbg），失败退网页端
+// Search 书城搜索（10/05 起 TND 首选）：TND 直连番茄官方基础设施、无设备风控
+// 压力，但上游无翻页参数（一次约 20 条），仅服务首页 offset=0；翻页或 TND
+// 失败/空结果退 App 协议（unidbg，NAS 偶发服务层 NPE），再退网页端。
 func (h *StoreHandler) Search(c *gin.Context) {
 	query := strings.TrimSpace(c.Query("query"))
 	offset := clampQuery(c.Query("offset"), 0, 0, 100000)
@@ -255,6 +259,34 @@ func (h *StoreHandler) Search(c *gin.Context) {
 	if query == "" {
 		c.JSON(http.StatusOK, gin.H{"items": []fanqie.LibraryBook{}})
 		return
+	}
+
+	// ① TND 搜索（仅首页）
+	if offset == 0 && h.TND.Enabled() {
+		if items, err := h.TND.Search(query); err == nil && len(items) > 0 {
+			books := make([]fanqie.LibraryBook, 0, len(items))
+			for _, it := range items {
+				if it.BookID == "" || it.Title == "" {
+					continue
+				}
+				books = append(books, fanqie.LibraryBook{
+					ID: it.BookID, Title: it.Title, Author: it.Author,
+					Synopsis:  it.Abstract,
+					Cover:     it.ThumbURL,
+					Finished:  it.CreationStatus == "1",
+					WordCount: tndWordCount(it.WordNumber),
+					ReadCount: tndReadCount(it.ReadCntText, it.ReadCount),
+				})
+			}
+			books = books[:minInt(count, len(books))]
+			h.markBooks(books)
+			c.JSON(http.StatusOK, gin.H{"items": books})
+			return
+		} else if err != nil {
+			log.Printf("[store] TND 搜索失败 %q: %v，退 App 协议/网页", query, err)
+		} else {
+			log.Printf("[store] TND 搜索 %q 无结果，退 App 协议/网页", query)
+		}
 	}
 
 	var books []fanqie.LibraryBook
@@ -288,6 +320,33 @@ func (h *StoreHandler) Search(c *gin.Context) {
 	}
 	h.markBooks(books)
 	c.JSON(http.StatusOK, gin.H{"items": books})
+}
+
+// tndWordCount 原始字数值 → "135.6万字"（App 搜索卡直接展示该文案）
+func tndWordCount(n int64) string {
+	if n <= 0 {
+		return ""
+	}
+	if n < 10000 {
+		return strconv.Itoa(int(n)) + "字"
+	}
+	s := strconv.FormatFloat(float64(n)/10000, 'f', 1, 64)
+	return strings.TrimSuffix(s, ".0") + "万字"
+}
+
+// tndReadCount 在读文案归一："1.4万人在读" → "1.4万"；非计数文案退原始数值
+func tndReadCount(text string, n int64) string {
+	if strings.HasSuffix(text, "人在读") {
+		return strings.TrimSuffix(text, "人在读")
+	}
+	if n <= 0 {
+		return ""
+	}
+	if n < 10000 {
+		return strconv.Itoa(int(n))
+	}
+	s := strconv.FormatFloat(float64(n)/10000, 'f', 1, 64)
+	return strings.TrimSuffix(s, ".0") + "万"
 }
 
 // ─── 预设榜单（App 推荐榜卡的网页端近似）───────────────────────────────
@@ -839,8 +898,16 @@ func (h *StoreHandler) AppFeed(c *gin.Context) {
 	h.feedMu.Unlock()
 	c.JSON(http.StatusOK, gin.H{"sections": out})
 }
-// AppFeedPage 猜你喜欢瀑布流翻页：App 传 appfeed 下发的 cell_id/plan_id/offset，
-// 服务端原样回放官方 cell/change 协议（10/03 实测）。
+// AppFeedPage 猜你喜欢瀑布流翻页：App 传 appfeed 下发的 cell_id/plan_id/offset。
+// 上游 cell/change 是个性化会话端点，冷启动/突发连打会返回软空页（10/04 档案），
+// 因此三层取数（10/05 定案）：
+//  ① 内存缓存（3min 正 / 60s 负）；
+//  ② DB 持久缓存 last-known-good：非强刷请求 6h 内直接回放、不碰上游——首屏
+//     秒出且完全绕开冷会话；封面签名 URL 有效期 1~2 天，6h 内必然有效；
+//  ③ 上游聚合拉取：逐页打到 ≥10 本（上游一页书卡 1~10 本波动，视频卡被过滤）
+//     或 3 页上限；下游拉失败回退 DB 陈旧值（任何年龄）——App 端不再出报错横幅。
+//  App 下拉刷新带 refresh=1：绕过①②强制走③并回写两级缓存（用户要求：更新只
+//  跟随下拉刷新）。与小说/漫画频道同策略走 cellFeed 家族助手。
 func (h *StoreHandler) AppFeedPage(c *gin.Context) {
 	if !h.UNI.Enabled() {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "unidbg 服务未配置（XS_UNIDBG_URL）"})
@@ -852,17 +919,108 @@ func (h *StoreHandler) AppFeedPage(c *gin.Context) {
 	if cellID == "" {
 		cellID = unidbg.DefaultFeedCellID
 	}
+	planID := c.DefaultQuery("plan_id", "0")
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
-	books, nextOffset, hasMore, err := h.UNI.FeedPage(cellID, c.DefaultQuery("plan_id", "0"), offset)
-	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "获取瀑布流翻页失败: " + err.Error()})
+	if offset < 0 {
+		offset = 0
+	}
+	forceRefresh := c.Query("refresh") == "1"
+	key := "guess|" + cellID + "|" + planID + "|" + strconv.Itoa(offset)
+
+	respondDB := func(ent *database.FeedCacheEntry) {
+		c.JSON(http.StatusOK, gin.H{
+			"books":       json.RawMessage(ent.Items),
+			"next_offset": ent.NextOffset,
+			"has_more":    ent.HasMore,
+		})
+	}
+
+	// ① 内存缓存；② DB 持久缓存（强刷均绕过）。负缓存命中说明上游正在冷却，
+	// 此时无论 DB 多旧都回退陈旧值，不再打上游
+	if !forceRefresh {
+		items, next, more, errStr, hit := h.cellFeedLookup(key)
+		if hit && errStr == "" {
+			c.JSON(http.StatusOK, gin.H{"books": items, "next_offset": next, "has_more": more})
+			return
+		}
+		if ent := h.DB.GetFeedCache(key); ent != nil {
+			if errStr != "" || time.Since(ent.UpdatedAt) <= guessFeedStaleTTL {
+				respondDB(ent)
+				return
+			}
+		}
+	}
+
+	// ③ 上游聚合拉取并回写两级缓存
+	items, next, more, err := h.guessFeedFetch(cellID, planID, offset)()
+	if err == nil {
+		h.cellFeedPut(key, items, next, more, "")
+		if raw, merr := json.Marshal(items); merr == nil {
+			h.DB.PutFeedCache(key, string(raw), next, more)
+		}
+		c.JSON(http.StatusOK, gin.H{"books": items, "next_offset": next, "has_more": more})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"books":       feedBooksOut(books),
-		"next_offset": nextOffset,
-		"has_more":    hasMore,
-	})
+	// 上游失败：回退 DB 陈旧值（保可用性优先）；连陈旧值都没有才报错（App 端
+	// 现有的横幅+90s 自动重试兜底）
+	if ent := h.DB.GetFeedCache(key); ent != nil {
+		log.Printf("[store] 猜你喜欢上游失败回退陈旧缓存 key=%s: %v", key, err)
+		respondDB(ent)
+		return
+	}
+	h.cellFeedPut(key, nil, 0, false, err.Error())
+	c.JSON(http.StatusBadGateway, gin.H{"error": "获取瀑布流翻页失败: " + err.Error()})
+}
+
+// 猜你喜欢聚合参数：单次请求聚合到 ≥10 本（首次拿 10 本）、最多 3 页上游请求；
+// DB 兜底缓存 6h 内视为可直回放（封面签名 URL 有效期 1~2 天）
+const (
+	guessFeedMinBooks = 10
+	guessFeedMaxPages = 3
+	guessFeedStaleTTL = 6 * time.Hour
+)
+
+// guessFeedFetch 猜你喜欢聚合拉取：逐页打到 ≥10 本或 3 页上限；中途页失败/空页
+// 保留已聚合部分（游标/has_more 取最后一个成功页），首页为空才算失败。
+// unidbg.FeedPage 内部已带空页 800ms 重试。
+func (h *StoreHandler) guessFeedFetch(cellID, planID string, offset int) func() ([]any, int, bool, error) {
+	return func() ([]any, int, bool, error) {
+		seen := map[string]bool{}
+		var agg []any
+		cur := offset
+		next, more := offset, false
+		var lastErr error
+		for page := 0; page < guessFeedMaxPages; page++ {
+			books, n2, m2, err := h.UNI.FeedPage(cellID, planID, cur)
+			if err != nil {
+				lastErr = err
+				break
+			}
+			if len(books) == 0 {
+				break // 空页当流结束（内部已重试过）
+			}
+			next, more = n2, m2
+			for _, b := range feedBooksOut(books) {
+				if seen[b.ID] {
+					continue
+				}
+				seen[b.ID] = true
+				agg = append(agg, b)
+			}
+			if !m2 || len(agg) >= guessFeedMinBooks {
+				break
+			}
+			cur = n2
+			time.Sleep(300 * time.Millisecond) // 翻页限速
+		}
+		if len(agg) == 0 {
+			if lastErr != nil {
+				return nil, 0, false, lastErr
+			}
+			return nil, 0, false, errors.New("猜你喜欢上游返回空页")
+		}
+		return agg, next, more, nil
+	}
 }
 
 // ─── 小说/漫画频道（bookmall cell/change，10/04 协议定案）────────────
@@ -888,42 +1046,59 @@ var novelFilterRe = regexp.MustCompile(`^[a-z0-9_]{2,40}$`)
 
 // cellFeedCached 通用取缓存/回放（自带锁）。fetch 返回 (条目, next_offset, has_more, error)。
 func (h *StoreHandler) cellFeedCached(key string, fetch func() ([]any, int, bool, error)) (items []any, nextOffset int, hasMore bool, err error) {
-	h.cellFeedMu.Lock()
-	if h.cellFeedCache == nil {
-		h.cellFeedCache = map[string]cellFeedCacheEntry{}
-	}
-	if ent, ok := h.cellFeedCache[key]; ok {
-		ttl := cellFeedCacheTTL
-		if ent.err != "" {
-			ttl = cellFeedNegCacheTTL
+	if items, next, more, errStr, hit := h.cellFeedLookup(key); hit {
+		if errStr != "" {
+			return nil, 0, false, errors.New(errStr)
 		}
-		if time.Since(ent.at) < ttl {
-			h.cellFeedMu.Unlock()
-			if ent.err != "" {
-				return nil, 0, false, errors.New(ent.err)
-			}
-			list, _ := ent.items.([]any)
-			return list, ent.nextOffset, ent.hasMore, nil
-		}
+		return items, next, more, nil
 	}
-	h.cellFeedMu.Unlock()
-
 	raws, next, more, ferr := fetch()
-	h.cellFeedMu.Lock()
-	h.cellFeedCache[key] = cellFeedCacheEntry{
-		items: raws, nextOffset: next, hasMore: more,
-		err: func() string {
-			if ferr != nil {
-				return ferr.Error()
-			}
-			return ""
-		}(), at: time.Now(),
+	errStr := ""
+	if ferr != nil {
+		errStr = ferr.Error()
 	}
-	h.cellFeedMu.Unlock()
+	h.cellFeedPut(key, raws, next, more, errStr)
 	if ferr != nil {
 		return nil, 0, false, ferr
 	}
 	return raws, next, more, nil
+}
+
+// cellFeedLookup 查内存瀑布流缓存（3min 正 / 60s 负）。hit=true 时 err 非空表示负缓存命中。
+func (h *StoreHandler) cellFeedLookup(key string) (items []any, nextOffset int, hasMore bool, errStr string, hit bool) {
+	h.cellFeedMu.Lock()
+	defer h.cellFeedMu.Unlock()
+	if h.cellFeedCache == nil {
+		return nil, 0, false, "", false
+	}
+	ent, ok := h.cellFeedCache[key]
+	if !ok {
+		return nil, 0, false, "", false
+	}
+	ttl := cellFeedCacheTTL
+	if ent.err != "" {
+		ttl = cellFeedNegCacheTTL
+	}
+	if time.Since(ent.at) >= ttl {
+		return nil, 0, false, "", false
+	}
+	if ent.err != "" {
+		return nil, 0, false, ent.err, true
+	}
+	list, _ := ent.items.([]any)
+	return list, ent.nextOffset, ent.hasMore, "", true
+}
+
+// cellFeedPut 写入内存瀑布流缓存条目（err 非空 = 负缓存）
+func (h *StoreHandler) cellFeedPut(key string, items []any, nextOffset int, hasMore bool, errStr string) {
+	h.cellFeedMu.Lock()
+	defer h.cellFeedMu.Unlock()
+	if h.cellFeedCache == nil {
+		h.cellFeedCache = map[string]cellFeedCacheEntry{}
+	}
+	h.cellFeedCache[key] = cellFeedCacheEntry{
+		items: items, nextOffset: nextOffset, hasMore: hasMore, err: errStr, at: time.Now(),
+	}
 }
 
 // NovelFeed 小说频道筛选瀑布流：GET /api/store/novelfeed?filters=finished,male&offset=0
@@ -982,7 +1157,6 @@ func feedBookOut(b unidbg.FeedBook) storeFeedBook {
 	}
 }
 
-// storeComicBook 漫画频道卡输出
 type storeComicBook struct {
 	ID         string `json:"id"`
 	Title      string `json:"title"`
@@ -1045,17 +1219,8 @@ type comicDetCacheEntry struct {
 	err      error
 }
 
-// ComicDetail 漫画详情 + 全量话列表：GET /api/store/comics/:bookID
-func (h *StoreHandler) ComicDetail(c *gin.Context) {
-	if !h.UNI.Enabled() {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "unidbg 服务未配置（XS_UNIDBG_URL）"})
-		return
-	}
-	bookID := c.Param("bookID")
-	if !fanqie.ValidateBookID(bookID) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "漫画 ID 无效"})
-		return
-	}
+// fetchComic 漫画详情+全量话列表，短缓存命中直接返回（详情与加入书架共用）
+func (h *StoreHandler) fetchComic(bookID string) (*unidbg.ComicDetailInfo, []fanqie.ChapterInfo, error) {
 	h.comicDetMu.Lock()
 	if h.comicDetCache == nil {
 		h.comicDetCache = map[string]comicDetCacheEntry{}
@@ -1064,12 +1229,10 @@ func (h *StoreHandler) ComicDetail(c *gin.Context) {
 	h.comicDetMu.Unlock()
 	if ok {
 		if ent.err != nil && time.Since(ent.at) <= storeDetailFailTTL {
-			c.JSON(http.StatusBadGateway, gin.H{"error": "获取漫画详情失败: " + ent.err.Error()})
-			return
+			return nil, nil, ent.err
 		}
 		if ent.err == nil && time.Since(ent.at) <= storeDetailCacheTTL {
-			emitComicDetail(c, bookID, ent.info, ent.chapters)
-			return
+			return ent.info, ent.chapters, nil
 		}
 	}
 	info, err := h.UNI.ComicDetail(bookID)
@@ -1077,16 +1240,14 @@ func (h *StoreHandler) ComicDetail(c *gin.Context) {
 		h.comicDetMu.Lock()
 		h.comicDetCache[bookID] = comicDetCacheEntry{at: time.Now(), err: err}
 		h.comicDetMu.Unlock()
-		c.JSON(http.StatusBadGateway, gin.H{"error": "获取漫画详情失败: " + err.Error()})
-		return
+		return nil, nil, err
 	}
 	metas, err := h.UNI.ComicDirectory(bookID)
 	if err != nil {
 		h.comicDetMu.Lock()
 		h.comicDetCache[bookID] = comicDetCacheEntry{at: time.Now(), err: err}
 		h.comicDetMu.Unlock()
-		c.JSON(http.StatusBadGateway, gin.H{"error": "获取话列表失败: " + err.Error()})
-		return
+		return nil, nil, err
 	}
 	chapters := make([]fanqie.ChapterInfo, 0, len(metas))
 	for i, m := range metas {
@@ -1099,10 +1260,29 @@ func (h *StoreHandler) ComicDetail(c *gin.Context) {
 	h.comicDetMu.Lock()
 	h.comicDetCache[bookID] = comicDetCacheEntry{info: info, chapters: chapters, at: time.Now()}
 	h.comicDetMu.Unlock()
-	emitComicDetail(c, bookID, info, chapters)
+	return info, chapters, nil
 }
 
-func emitComicDetail(c *gin.Context, bookID string, info *unidbg.ComicDetailInfo, chapters []fanqie.ChapterInfo) {
+// ComicDetail 漫画详情 + 全量话列表：GET /api/store/comics/:bookID
+func (h *StoreHandler) ComicDetail(c *gin.Context) {
+	if !h.UNI.Enabled() {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "unidbg 服务未配置（XS_UNIDBG_URL）"})
+		return
+	}
+	bookID := c.Param("bookID")
+	if !fanqie.ValidateBookID(bookID) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "漫画 ID 无效"})
+		return
+	}
+	info, chapters, err := h.fetchComic(bookID)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "获取漫画详情失败: " + err.Error()})
+		return
+	}
+	emitComicDetail(c, bookID, info, chapters, h.comicOnShelf(c, bookID))
+}
+
+func emitComicDetail(c *gin.Context, bookID string, info *unidbg.ComicDetailInfo, chapters []fanqie.ChapterInfo, onShelf bool) {
 	c.JSON(http.StatusOK, gin.H{
 		"id":        bookID,
 		"title":     info.BookName,
@@ -1115,8 +1295,86 @@ func emitComicDetail(c *gin.Context, bookID string, info *unidbg.ComicDetailInfo
 		"read_count": info.ReadCntText,
 		"update_tag": info.UpdateTag,
 		"finished":  info.Finished,
+		"on_shelf":  onShelf,
 		"chapters":  chapters,
 	})
+}
+
+// comicOnShelf 该用户书架是否已收录此漫画（未入库恒为 false）
+func (h *StoreHandler) comicOnShelf(c *gin.Context, bookID string) bool {
+	row, err := h.DB.GetComicByFanqieID(bookID)
+	if err != nil {
+		return false
+	}
+	on, err := h.DB.IsOnShelf(middleware.UserID(c), row.ID)
+	return err == nil && on
+}
+
+// ComicShelfAdd 漫画加入书架：POST /api/store/comics/:bookID/shelf
+// 漫画不下载正文，轻量入库 books（source=comic）后复用通用书架链路
+func (h *StoreHandler) ComicShelfAdd(c *gin.Context) {
+	if !h.UNI.Enabled() {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "unidbg 服务未配置（XS_UNIDBG_URL）"})
+		return
+	}
+	bookID := c.Param("bookID")
+	if !fanqie.ValidateBookID(bookID) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "漫画 ID 无效"})
+		return
+	}
+	row, err := h.DB.GetComicByFanqieID(bookID)
+	if err == database.ErrNotFound {
+		info, chapters, err := h.fetchComic(bookID)
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "获取漫画详情失败: " + err.Error()})
+			return
+		}
+		rowID, err := h.DB.UpsertComicBook(&model.Book{
+			FanqieID:      bookID,
+			Title:         info.BookName,
+			Author:        info.Author,
+			Intro:         info.Abstract,
+			Cover:         info.ThumbURL,
+			TotalChapters: len(chapters),
+			Finished:      info.Finished,
+		})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "入库失败"})
+			return
+		}
+		row = &model.Book{ID: rowID}
+	} else if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询失败"})
+		return
+	}
+	if err := h.DB.AddShelf(middleware.UserID(c), row.ID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "加入书架失败"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// ComicShelfRemove 漫画移出书架：DELETE /api/store/comics/:bookID/shelf（未入库视为已移除，幂等）
+func (h *StoreHandler) ComicShelfRemove(c *gin.Context) {
+	bookID := c.Param("bookID")
+	if !fanqie.ValidateBookID(bookID) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "漫画 ID 无效"})
+		return
+	}
+	row, err := h.DB.GetComicByFanqieID(bookID)
+	if err == database.ErrNotFound {
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询失败"})
+		return
+	}
+	if err := h.DB.RemoveShelf(middleware.UserID(c), row.ID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "移出书架失败"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
 // ComicChapter 漫画单话图片列表：GET /api/store/comics/:bookID/chapters/:itemID
@@ -1140,14 +1398,29 @@ func (h *StoreHandler) ComicChapter(c *gin.Context) {
 	}
 	out := make([]gin.H, 0, len(imgs))
 	for _, im := range imgs {
+		proxy := h.signComicImg(im.URL, encKey)
 		out = append(out, gin.H{
-			"url":    im.URL,
+			// url 同样发代理绝对地址：已装机的老 APK 只读 url（App 零改动即可用）；
+			// CDN 加密直链对客户端没有意义，不给
+			"url":    absoluteReqURL(c, proxy),
 			"width":  im.Width,
 			"height": im.Height,
-			"proxy":  h.signComicImg(im.URL, encKey),
+			"proxy":  proxy, // 相对路径，新客户端自行拼 baseUrl（api.dart 已支持）
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"images": out})
+}
+
+// absoluteReqURL 把相对路径补成客户端可达的绝对地址（反代场景优先 X-Forwarded-Proto）
+func absoluteReqURL(c *gin.Context, rel string) string {
+	scheme := "http"
+	if c.Request.TLS != nil {
+		scheme = "https"
+	}
+	if fwd := c.GetHeader("X-Forwarded-Proto"); fwd != "" {
+		scheme = fwd
+	}
+	return scheme + "://" + c.Request.Host + rel
 }
 
 // comicImgProxyTTL 代理 URL 有效期（阅读一话足够长，过期重进详情页自动换新）

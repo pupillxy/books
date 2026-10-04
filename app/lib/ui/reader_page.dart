@@ -206,7 +206,8 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
   List<_ScrollItem> _trailItems = const [];
   final Map<int, GlobalKey> _blockKeys = {}; // 章首标题 key（量测章起点）
   final Map<int, double> _blockStarts = {}; // 章 → 起始滚动偏移（相对中心，可为负）
-  final Set<int> _mountTried = {}; // 邻章挂载失败防重试风暴
+  final Set<int> _mounting = {}; // 正在挂载的邻章（去重并发）
+  final Map<int, DateTime> _mountFailedAt = {}; // 邻章挂载失败时间（冷却后可重试）
   double? _pendingPageRatio; // 滚动→分页切换时要恢复的页面比例
   int _lastScrollPct = -1; // 页脚百分比节流
   DateTime _lastPosSave = DateTime.fromMillisecondsSinceEpoch(0); // 位置落盘节流
@@ -415,7 +416,8 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
           _centerBlock = idx;
           _blockStarts.clear();
           _blockStarts[idx] = 0;
-          _mountTried.clear();
+          _mounting.clear();
+          _mountFailedAt.clear();
           _rebuildScrollItems();
         }
       });
@@ -752,7 +754,8 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
       _centerBlock = _chapterIdx;
       _blockStarts.clear();
       _blockStarts[_chapterIdx] = 0;
-      _mountTried.clear();
+      _mounting.clear();
+      _mountFailedAt.clear();
       _rebuildScrollItems();
       _mountNeighbor(1);
       _mountNeighbor(-1);
@@ -1061,9 +1064,69 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
             key: _centerKey, isCenter: true),
         if (_trailItems.isNotEmpty)
           sliverList(_trailItems, const EdgeInsets.symmetric(horizontal: _padH)),
-        const SliverToBoxAdapter(child: SizedBox(height: 24)),
+        SliverToBoxAdapter(child: _scrollFooter(theme)),
       ],
     );
+  }
+
+  /// 章尾页脚：下一章加载中 / 加载失败点按重试 / 已是最后一章
+  Widget _scrollFooter(ReaderTheme theme) {
+    final last = _trailBlocks.isNotEmpty ? _trailBlocks.last : _centerBlock;
+    final next = (last ?? -1) + 1;
+    Widget hint(String text, {Color? color}) => Padding(
+          padding: const EdgeInsets.fromLTRB(_padH, 18, _padH, 8),
+          child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+            Text(text,
+                style: TextStyle(
+                    fontSize: 12.5, color: color ?? theme.fg.withValues(alpha: 0.4))),
+          ]),
+        );
+    if (_total > 0 && next >= _total) {
+      return hint('已经是最后一章了');
+    }
+    if (_mounting.contains(next)) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(_padH, 18, _padH, 8),
+        child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+          SizedBox(
+              width: 13,
+              height: 13,
+              child: CircularProgressIndicator(
+                  strokeWidth: 1.8, color: theme.fg.withValues(alpha: 0.45))),
+          const SizedBox(width: 8),
+          Text('下一章加载中…',
+              style: TextStyle(
+                  fontSize: 12.5, color: theme.fg.withValues(alpha: 0.45))),
+        ]),
+      );
+    }
+    if (_mountFailedAt.containsKey(next)) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(_padH, 12, _padH, 8),
+        child: Center(
+          child: InkWell(
+            onTap: () {
+              setState(() => _mountFailedAt.remove(next));
+              _mountNeighbor(1, force: true);
+            },
+            borderRadius: BorderRadius.circular(999),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
+              decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(999),
+                  border: Border.all(
+                      color: theme.fg.withValues(alpha: 0.25), width: 1)),
+              child: Text('下一章加载失败，点按重试',
+                  style: TextStyle(
+                      fontSize: 12.5,
+                      color: theme.fg.withValues(alpha: 0.6))),
+            ),
+          ),
+        ),
+      );
+    }
+    // 正常状态：留出与旧版一致的底部留白
+    return const SizedBox(height: 24, key: ValueKey('scroll-footer-idle'));
   }
 
   Widget _scrollItemView(_ScrollItem it, ReaderTheme theme) {
@@ -1086,8 +1149,8 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
     return Text(it.text, style: _bodyStyle());
   }
 
-  /// 预取并挂载一章邻章（幂等；失败不重试防风暴）
-  Future<void> _mountNeighbor(int dir) async {
+  /// 预取并挂载一章邻章（幂等；失败记入冷却 6s 后可重试，不再永久拉黑）
+  Future<void> _mountNeighbor(int dir, {bool force = false}) async {
     final cur = _centerBlock;
     if (cur == null) return;
     final int target;
@@ -1100,14 +1163,36 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
     if (target == _centerBlock ||
         _leadBlocks.contains(target) ||
         _trailBlocks.contains(target) ||
-        _mountTried.contains(target)) {
+        _mounting.contains(target)) {
       return;
     }
-    _mountTried.add(target);
+    // 失败冷却：6s 内不自动重试（force 跳过，供页脚「点按重试」用）
+    if (!force) {
+      final failAt = _mountFailedAt[target];
+      if (failAt != null && DateTime.now().difference(failAt).inSeconds < 6) {
+        return;
+      }
+    }
+    _mounting.add(target);
     try {
       await _fetchChapter(target);
     } catch (_) {
+      if (mounted) {
+        setState(() => _mountFailedAt[target] = DateTime.now());
+        // 用户常停在章尾不动（无滚动事件），冷却过后自动补一次重试；
+        // 仅补一次，仍失败则留在页脚「点按重试」，避免对不可用章打风暴
+        Future.delayed(const Duration(seconds: 7), () {
+          if (mounted &&
+              _scrollMode &&
+              _mountFailedAt.containsKey(target) &&
+              !_mounting.contains(target)) {
+            _mountNeighbor(dir);
+          }
+        });
+      }
       return;
+    } finally {
+      _mounting.remove(target);
     }
     if (!mounted) return;
     if (target == _centerBlock ||
@@ -1120,6 +1205,7 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
         ? _scrollCtl.position.maxScrollExtent
         : null;
     setState(() {
+      _mountFailedAt.remove(target);
       if (dir < 0) {
         _leadBlocks.insert(0, target);
       } else {

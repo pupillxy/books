@@ -822,3 +822,104 @@ class ComicImage {
         height: (j['height'] as num?)?.toInt() ?? 0,
       );
 }
+
+// ─── 书城分类页（官方 new_category 协议，10/05 定案）─────────────────
+
+/// 分类页顶部频道（server 只透出小说两频道：男生=1 / 女生=0）
+class StoreCategoryTab {
+  final int id;
+  final String name;
+
+  const StoreCategoryTab({required this.id, required this.name});
+
+  factory StoreCategoryTab.fromJson(Map<String, dynamic> j) => StoreCategoryTab(
+        id: (j['id'] as num?)?.toInt() ?? 0,
+        name: (j['name'] ?? '') as String,
+      );
+}
+
+/// 分类标签（点击进书单页）
+class StoreCategoryTag {
+  final int id;
+  final String name;
+
+  const StoreCategoryTag({required this.id, required this.name});
+
+  factory StoreCategoryTag.fromJson(Map<String, dynamic> j) => StoreCategoryTag(
+        id: (j['id'] as num?)?.toInt() ?? 0,
+        name: (j['name'] ?? '') as String,
+      );
+}
+
+/// 左侧栏分组（热门标签/主题/角色/情节）
+class StoreCategoryGroup {
+  final String name;
+  final List<StoreCategoryTag> tags;
+
+  const StoreCategoryGroup({required this.name, required this.tags});
+
+  factory StoreCategoryGroup.fromJson(Map<String, dynamic> j) =>
+      StoreCategoryGroup(
+        name: (j['name'] ?? '') as String,
+        tags: ((j['tags'] as List?) ?? const [])
+            .map((e) => StoreCategoryTag.fromJson(e as Map<String, dynamic>))
+            .toList(),
+      );
+}
+
+/// 分类页标签树（单频道）
+class StoreCategoriesData {
+  final int tab;
+  final String name;
+  final List<StoreCategoryTab> tabs;
+  final List<StoreCategoryGroup> groups;
+
+  const StoreCategoriesData({
+    required this.tab,
+    required this.name,
+    required this.tabs,
+    required this.groups,
+  });
+
+  factory StoreCategoriesData.fromJson(Map<String, dynamic> j) =>
+      StoreCategoriesData(
+        tab: (j['tab'] as num?)?.toInt() ?? 0,
+        name: (j['name'] ?? '') as String,
+        tabs: ((j['tabs'] as List?) ?? const [])
+            .map((e) => StoreCategoryTab.fromJson(e as Map<String, dynamic>))
+            .toList(),
+        groups: ((j['groups'] as List?) ?? const [])
+            .map((e) => StoreCategoryGroup.fromJson(e as Map<String, dynamic>))
+            .toList(),
+      );
+}
+
+/// 分类书单页（landing）：书单 + 官方 banner 语 + 相关分类
+class CategoryFeedPageResult {
+  final List<FeedBook> books;
+  final int nextOffset;
+  final bool hasMore;
+  final String banner;
+  final List<StoreCategoryTag> related;
+
+  const CategoryFeedPageResult({
+    required this.books,
+    required this.nextOffset,
+    required this.hasMore,
+    this.banner = '',
+    this.related = const [],
+  });
+
+  factory CategoryFeedPageResult.fromJson(Map<String, dynamic> j) =>
+      CategoryFeedPageResult(
+        books: ((j['items'] as List?) ?? const [])
+            .map((e) => FeedBook.fromJson(e as Map<String, dynamic>))
+            .toList(),
+        nextOffset: (j['next_offset'] as num?)?.toInt() ?? 0,
+        hasMore: (j['has_more'] ?? false) as bool,
+        banner: (j['banner'] ?? '') as String,
+        related: ((j['related'] as List?) ?? const [])
+            .map((e) => StoreCategoryTag.fromJson(e as Map<String, dynamic>))
+            .toList(),
+      );
+}

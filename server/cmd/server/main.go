@@ -100,8 +100,11 @@ func main() {
 	authed.GET("/store/comics/:bookID/chapters/:itemID", storeH.ComicChapter) // 漫画单话图片
 	authed.POST("/store/comics/:bookID/shelf", storeH.ComicShelfAdd)   // 漫画加入书架（轻量入库）
 	authed.DELETE("/store/comics/:bookID/shelf", storeH.ComicShelfRemove) // 漫画移出书架
-	authed.GET("/store/search", storeH.Search)                     // 书城搜索（网页端）	authed.GET("/store/library/categories", storeH.LibraryCategories) // 书库分类树
+	authed.GET("/store/search", storeH.Search)                     // 书城搜索（网页端）
+	authed.GET("/store/library/categories", storeH.LibraryCategories) // 书库分类树
 	authed.GET("/store/library/books", storeH.LibraryBooks)          // 书库筛选列表
+	authed.GET("/store/categories", storeH.Categories)               // 分类页标签树（new_category/front）
+	authed.GET("/store/categoryfeed", storeH.CategoryFeed)           // 分类书单页（new_category/landing）
 	authed.GET("/store/books/:fanqieID", storeH.BookDetail)
 	authed.POST("/store/books/:fanqieID/auto", storeH.AutoDownload) // 详情页进入即自动入库+整本下载
 	authed.POST("/store/books/:fanqieID/add", storeH.AddBook)

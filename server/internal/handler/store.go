@@ -64,6 +64,13 @@ type StoreHandler struct {
 	comicDetMu    sync.Mutex
 	comicDetCache map[string]comicDetCacheEntry
 
+	// 分类页标签树缓存（key=gender）：标签树变更极少，正缓存 6h，上游失败回退陈旧值
+	catFrontMu    sync.Mutex
+	catFrontCache map[int]catFrontEntry
+
+	// 分类书单页缓存（key 含分类/筛选/offset）：同 cellFeed 缓存策略
+	catFeedMu    sync.Mutex
+	catFeedCache map[string]catFeedEntry
 }
 
 const rankBatchTTL = 2 * time.Minute
@@ -1157,6 +1164,159 @@ func feedBookOut(b unidbg.FeedBook) storeFeedBook {
 	}
 }
 
+// ─── 分类页（官方 new_category 协议，10/05 抓包定案，档案 capture_xiaoshuo_1005）───
+
+type catFrontEntry struct {
+	data *unidbg.CategoryFrontData
+	at   time.Time
+}
+
+const catFrontTTL = 6 * time.Hour
+
+type catFeedEntry struct {
+	page *unidbg.CategoryLandingPage
+	at   time.Time
+	err  string // 非空 = 负缓存
+}
+
+var categoryIDRe = regexp.MustCompile(`^[0-9]{1,10}$`)
+
+// Categories 分类页标签树：GET /api/store/categories?gender=1
+// gender 1=男生(new_category_tab=1) 0=女生(=0)。官方全集还有听书/出版/短剧/漫画
+// 频道，本服务只透出小说两频道（其余内容形态 App 未接）。
+// 标签树变更极少：正缓存 6h，上游失败回退任意年龄陈旧值（入口页可用性优先）。
+func (h *StoreHandler) Categories(c *gin.Context) {
+	if !h.UNI.Enabled() {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "unidbg 服务未配置（XS_UNIDBG_URL）"})
+		return
+	}
+	gender, _ := strconv.Atoi(c.DefaultQuery("gender", "1"))
+	if gender != 0 {
+		gender = 1
+	}
+	h.catFrontMu.Lock()
+	ent, ok := h.catFrontCache[gender]
+	h.catFrontMu.Unlock()
+	if ok && time.Since(ent.at) < catFrontTTL {
+		c.JSON(http.StatusOK, gin.H{"tab": ent.data.Tab, "name": ent.data.Name,
+			"tabs": ent.data.Tabs, "groups": ent.data.Groups})
+		return
+	}
+	data, err := h.UNI.CategoryFront(gender)
+	if err != nil {
+		if ok { // 陈旧值兜底：分类页是书城入口，标签树宁旧勿挂
+			c.JSON(http.StatusOK, gin.H{"tab": ent.data.Tab, "name": ent.data.Name,
+				"tabs": ent.data.Tabs, "groups": ent.data.Groups})
+			return
+		}
+		c.JSON(http.StatusBadGateway, gin.H{"error": "获取分类标签树失败: " + err.Error()})
+		return
+	}
+	h.catFrontMu.Lock()
+	if h.catFrontCache == nil {
+		h.catFrontCache = map[int]catFrontEntry{}
+	}
+	h.catFrontCache[gender] = catFrontEntry{data: data, at: time.Now()}
+	h.catFrontMu.Unlock()
+	c.JSON(http.StatusOK, gin.H{"tab": data.Tab, "name": data.Name,
+		"tabs": data.Tabs, "groups": data.Groups})
+}
+
+// catFeedLookup 查分类书单缓存（同 cellFeedLookup 的正/负缓存语义）
+func (h *StoreHandler) catFeedLookup(key string) (*unidbg.CategoryLandingPage, bool) {
+	h.catFeedMu.Lock()
+	defer h.catFeedMu.Unlock()
+	ent, ok := h.catFeedCache[key]
+	if !ok {
+		return nil, false
+	}
+	ttl := cellFeedCacheTTL
+	if ent.err != "" {
+		ttl = cellFeedNegCacheTTL
+	}
+	if time.Since(ent.at) >= ttl {
+		return nil, false
+	}
+	return ent.page, true
+}
+
+func (h *StoreHandler) catFeedPut(key string, page *unidbg.CategoryLandingPage, errStr string) {
+	h.catFeedMu.Lock()
+	defer h.catFeedMu.Unlock()
+	if h.catFeedCache == nil {
+		h.catFeedCache = map[string]catFeedEntry{}
+	}
+	h.catFeedCache[key] = catFeedEntry{page: page, at: time.Now(), err: errStr}
+}
+
+// CategoryFeed 分类书单页：GET /api/store/categoryfeed?category_id=7&gender=1&filters=&offset=0
+// filters=官方筛选 selector_item_id 逗号串（如 word_num_gte200,creation_status_end,sort_score），
+// 白名单清洗同 NovelFeed；响应附 banner（官方标签语）与 related（相关分类，可整页跳转）。
+func (h *StoreHandler) CategoryFeed(c *gin.Context) {
+	if !h.UNI.Enabled() {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "unidbg 服务未配置（XS_UNIDBG_URL）"})
+		return
+	}
+	catID := strings.TrimSpace(c.Query("category_id"))
+	if !categoryIDRe.MatchString(catID) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "category_id 无效"})
+		return
+	}
+	gender, _ := strconv.Atoi(c.DefaultQuery("gender", "1"))
+	if gender != 0 {
+		gender = 1
+	}
+	var selected []string
+	seen := map[string]bool{}
+	for _, tok := range strings.Split(c.Query("filters"), ",") {
+		tok = strings.TrimSpace(tok)
+		if tok == "" || !novelFilterRe.MatchString(tok) || seen[tok] {
+			continue
+		}
+		seen[tok] = true
+		selected = append(selected, tok)
+		if len(selected) >= 6 {
+			break
+		}
+	}
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	if offset < 0 {
+		offset = 0
+	}
+	sel := strings.Join(selected, ",")
+	key := "cat:" + catID + "|" + strconv.Itoa(gender) + "|" + sel + "|" + strconv.Itoa(offset)
+	if page, hit := h.catFeedLookup(key); hit {
+		if page == nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "获取分类书单失败（缓存）"})
+			return
+		}
+		c.JSON(http.StatusOK, catFeedOut(page))
+		return
+	}
+	page, err := h.UNI.CategoryLanding(catID, strconv.Itoa(gender), sel, offset)
+	if err != nil {
+		h.catFeedPut(key, nil, err.Error())
+		c.JSON(http.StatusBadGateway, gin.H{"error": "获取分类书单失败: " + err.Error()})
+		return
+	}
+	h.catFeedPut(key, page, "")
+	c.JSON(http.StatusOK, catFeedOut(page))
+}
+
+func catFeedOut(page *unidbg.CategoryLandingPage) gin.H {
+	items := make([]storeFeedBook, 0, len(page.Books))
+	for _, b := range page.Books {
+		items = append(items, feedBookOut(b))
+	}
+	related := page.Related
+	if related == nil {
+		related = []unidbg.CategoryTag{}
+	}
+	return gin.H{"items": items, "next_offset": page.Next, "has_more": page.More,
+		"banner": page.Banner, "related": related}
+}
+
+// storeComicBook 漫画频道卡输出
 type storeComicBook struct {
 	ID         string `json:"id"`
 	Title      string `json:"title"`

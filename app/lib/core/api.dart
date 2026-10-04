@@ -108,6 +108,20 @@ class ApiClient {
       final r = await _dio.get(path, queryParameters: query);
       return r.data as T;
     } on DioException catch (e) {
+      // 瞬时网络抖动（TCP 连不上=请求根本没到服务器）：透明重试一次。
+      // 仅限连接类错误且 GET 幂等，server 侧有缓存，重试代价极低；
+      // 10/05 实测故障：categoryfeed 单发请求丢失（server/unidbg 日志均无痕迹），
+      // 105s 后重试即恢复——这类抖动不该让用户看到错误页。
+      if (e.type == DioExceptionType.connectionTimeout ||
+          e.type == DioExceptionType.connectionError) {
+        await Future.delayed(const Duration(milliseconds: 800));
+        try {
+          final r = await _dio.get(path, queryParameters: query);
+          return r.data as T;
+        } on DioException catch (e2) {
+          throw _fromDio(e2);
+        }
+      }
       throw _fromDio(e);
     }
   }
@@ -294,6 +308,29 @@ class ApiClient {
       nextOffset: (j['next_offset'] as num?)?.toInt() ?? offset,
       hasMore: (j['has_more'] ?? false) as bool,
     );
+  }
+
+  /// 分类页标签树（官方 new_category 协议；gender 1=男生 0=女生）
+  Future<StoreCategoriesData> storeCategories({int gender = 1}) async {
+    final j = await _get<Map<String, dynamic>>('/api/store/categories',
+        query: {'gender': '$gender'});
+    return StoreCategoriesData.fromJson(j);
+  }
+
+  /// 分类书单页（官方 landing 协议；filters=官方筛选值逗号串，可空）
+  Future<CategoryFeedPageResult> storeCategoryFeed({
+    required int categoryId,
+    required int gender,
+    String filters = '',
+    required int offset,
+  }) async {
+    final j = await _get<Map<String, dynamic>>('/api/store/categoryfeed', query: {
+      'category_id': '$categoryId',
+      'gender': '$gender',
+      'filters': filters,
+      'offset': '$offset',
+    });
+    return CategoryFeedPageResult.fromJson(j);
   }
 
   /// 漫画频道瀑布流

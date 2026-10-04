@@ -9,6 +9,7 @@ import '../core/session.dart';
 import '../core/store_pref.dart';
 import '../models.dart';
 import 'store_book_detail_page.dart';
+import 'store_category_page.dart';
 import 'store_comic_detail_page.dart';
 import 'store_rank_page.dart';
 import 'store_search_page.dart';
@@ -275,7 +276,7 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
     );
   }
 
-  // ── 搜索行 ──────────────────────────────────────────────────────
+  // ── 搜索行（右侧官方同构「分类」入口 → 分类页）──────────────────────
   Widget _buildSearchRow(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(14, 10, 14, 4),
@@ -307,7 +308,33 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
               ),
             ),
           ),
-
+          const SizedBox(width: 10),
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                builder: (_) => StoreCategoryPage(
+                    initialGender:
+                        ref.read(storeGenderProvider) == '0' ? 0 : 1))),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.grid_view_rounded,
+                      size: 17, color: Theme.of(context).colorScheme.onSurface),
+                  const SizedBox(width: 5),
+                  Text('分类',
+                      style: TextStyle(
+                          color: Theme.of(context).colorScheme.onSurface,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600)),
+                ],
+              ),
+            ),
+          ),
         ],
       ),
     );

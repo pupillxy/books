@@ -838,7 +838,220 @@ func derefOrEmpty(s *string) string {
 	}
 	return *s
 }
-（comic_tab/comic_detail/v 的 comic_data，10/04 实测）
+
+// ─── 分类页（new_category 家族，10/05 真机抓包定案，档案 capture_xiaoshuo_1005）───
+
+// CategoryTab 分类页顶部频道（category_tab_config.tab_list；官方全集
+// 男生=1/女生=0/听书=3/出版=2/短剧=6/漫画=5，server 只透出小说两频道）
+type CategoryTab struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+}
+
+// CategoryTag 分类标签（点击进 landing 书单页）
+type CategoryTag struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+}
+
+// CategoryGroup 左侧栏分组（热门标签/主题/角色/情节）
+type CategoryGroup struct {
+	Name string        `json:"name"`
+	Tags []CategoryTag `json:"tags"`
+}
+
+// CategoryFrontData 单频道标签树
+type CategoryFrontData struct {
+	Tab        int             `json:"tab"`
+	Name       string          `json:"name"`
+	Tabs       []CategoryTab   `json:"tabs"` // 全部频道清单（切 tab 用）
+	Groups     []CategoryGroup `json:"groups"`
+}
+
+// CategoryFront 拉取分类页标签树。gender: 1=男生(new_category_tab=1) 0=女生(=0)。
+// 请求模板与 App 抓包一致（v:version 路径后缀是 App 原样发出的，照抄可用）。
+func (c *Client) CategoryFront(gender int) (*CategoryFrontData, error) {
+	q := fmt.Sprintf("source=&distinct_style=1&new_category_tab=%d&category_new_page_715=0", gender)
+	data, err := c.fetchApp("/reading/bookapi/new_category/front/v:version/", q)
+	if err != nil {
+		return nil, err
+	}
+	var env struct {
+		Cfg struct {
+			TabTypeList []int    `json:"tab_type_list"`
+			TabNameList []string `json:"tab_name_list"`
+		} `json:"category_tab_config"`
+		TabData struct {
+			Tab      int    `json:"category_tab"`
+			TabName  string `json:"tab_name"`
+			CellData []struct {
+				CellName string `json:"cell_name"`
+				AtomData []struct {
+					CategoryData struct {
+						Name       string `json:"name"`
+						CategoryID int    `json:"category_id"`
+					} `json:"category_data"`
+				} `json:"atom_data"`
+			} `json:"cell_data"`
+		} `json:"category_tab_data"`
+	}
+	if err := json.Unmarshal(data, &env); err != nil {
+		return nil, fmt.Errorf("分类标签树解析: %w", err)
+	}
+	out := &CategoryFrontData{Tab: env.TabData.Tab, Name: env.TabData.TabName}
+	for i, id := range env.Cfg.TabTypeList {
+		name := ""
+		if i < len(env.Cfg.TabNameList) {
+			name = env.Cfg.TabNameList[i]
+		}
+		if name == "" {
+			continue
+		}
+		out.Tabs = append(out.Tabs, CategoryTab{ID: id, Name: name})
+	}
+	for _, cell := range env.TabData.CellData {
+		g := CategoryGroup{Name: cell.CellName}
+		for _, atom := range cell.AtomData {
+			cd := atom.CategoryData
+			if cd.Name == "" || cd.CategoryID == 0 {
+				continue
+			}
+			g.Tags = append(g.Tags, CategoryTag{ID: cd.CategoryID, Name: cd.Name})
+		}
+		if len(g.Tags) > 0 {
+			out.Groups = append(out.Groups, g)
+		}
+	}
+	if len(out.Groups) == 0 {
+		return nil, fmt.Errorf("分类标签树为空")
+	}
+	return out, nil
+}
+
+// CategoryLandingItem 分类书单条目（landing/v 的 book_info，字段与 bookmall 同族）
+type CategoryLandingItem struct {
+	BookID         string `json:"book_id"`
+	BookName       string `json:"book_name"`
+	Author         string `json:"author"`
+	Abstract       string `json:"abstract"`
+	Category       string `json:"category"`
+	ThumbURL       string `json:"thumb_url"`
+	ReadCount      string `json:"read_count"`
+	WordNumber     string `json:"word_number"`
+	Score          string `json:"score"`
+	Tags           string `json:"tags"`
+	SerialCount    string `json:"serial_count"`
+	CreationStatus string `json:"creation_status"`
+}
+
+// CategoryLandingPage landing 响应解析结果
+type CategoryLandingPage struct {
+	Books    []FeedBook
+	Next     int
+	More     bool
+	Banner   string
+	Related  []CategoryTag
+}
+
+// CategoryLanding 分类书单页（new_category/landing/v）。
+// categoryID=分类标签 id；gender 1=男生 0=女生；selected=官方筛选逗号串
+// （selector_item_id 如 word_num_gte200/creation_status_end/sort_score，服务端下发）；
+// offset 翻页（步长=limit）。返回 (书单, 下一页 offset, has_more, banner, 相关分类)。
+func (c *Client) CategoryLanding(categoryID, gender, selected string, offset int) (*CategoryLandingPage, error) {
+	// client_req_type 语义（App 抓包）：3=首屏 4=筛选变更 2=翻页
+	reqType := 2
+	if offset == 0 {
+		reqType = 3
+		if selected != "" {
+			reqType = 4
+		}
+	}
+	q := fmt.Sprintf("offset=%d&genre_type=0&category_type=0&is_merged_landing_page=false&source=front_category&category_id=%s&category_new_page_715=0&limit=20&page_version=2&no_need_all_tag=false&query_gender=%s&client_req_type=%d",
+		offset, url.QueryEscape(categoryID), url.QueryEscape(gender), reqType)
+	if selected != "" {
+		q += "&selected_items=" + url.QueryEscape(selected)
+	}
+	data, err := c.fetchApp("/reading/bookapi/new_category/landing/v", q)
+	if err != nil {
+		return nil, err
+	}
+	var env struct {
+		Selector struct {
+			Rows []struct {
+				Items []struct {
+					ItemID string `json:"selector_item_id"`
+					Name   string `json:"show_name"`
+				} `json:"items"`
+			} `json:"rows"`
+		} `json:"selector"`
+		Category struct {
+			Description string `json:"description"`
+		} `json:"category"`
+		CategoryDesc *struct {
+			Desc string `json:"desc"`
+			Name string `json:"name"`
+		} `json:"category_desc"`
+		BookInfo []CategoryLandingItem `json:"book_info"`
+		Offset   int                   `json:"offset"`
+		HasMore  bool                  `json:"has_more"`
+	}
+	if err := json.Unmarshal(data, &env); err != nil {
+		return nil, fmt.Errorf("分类书单解析: %w", err)
+	}
+	page := &CategoryLandingPage{Next: env.Offset, More: env.HasMore}
+	if env.CategoryDesc != nil && env.CategoryDesc.Desc != "" {
+		page.Banner = env.CategoryDesc.Desc
+	} else if env.Category.Description != "" {
+		page.Banner = env.Category.Description
+	}
+	// 相关分类 = 筛选条最后一行 cate_* 项（真实分类 id，可整页跳转）
+	if n := len(env.Selector.Rows); n > 0 {
+		for _, it := range env.Selector.Rows[n-1].Items {
+			if id, ok := strings.CutPrefix(it.ItemID, "cate_"); ok {
+				if idNum, err := strconv.Atoi(id); err == nil && it.Name != "" {
+					page.Related = append(page.Related, CategoryTag{ID: idNum, Name: it.Name})
+				}
+			}
+		}
+	}
+	for _, b := range env.BookInfo {
+		if b.BookID == "" || b.BookName == "" {
+			continue
+		}
+		page.Books = append(page.Books, FeedBook{
+			BookID:    b.BookID,
+			BookName:  b.BookName,
+			Author:    b.Author,
+			Abstract:  b.Abstract,
+			Category:  b.Category,
+			ThumbURL:  b.ThumbURL,
+			ReadCount: formatLandingReadCount(b.ReadCount),
+			Score:     b.Score,
+			Tags:      b.Tags,
+			WordNumber: b.WordNumber,
+			// landing 与 bookmall 同语义（10/05 实测：完结筛选返回全 0）——0=完结
+			Finished: b.CreationStatus == "0",
+		})
+	}
+	return page, nil
+}
+
+// formatLandingReadCount landing 的 read_count 是原始数字（"1167785"），转官方卡文案
+func formatLandingReadCount(raw string) string {
+	n, err := strconv.ParseFloat(raw, 64)
+	if err != nil || n <= 0 {
+		return ""
+	}
+	if n < 10000 {
+		return strconv.Itoa(int(n)) + "人在读"
+	}
+	w := n / 10000
+	s := strconv.FormatFloat(w, 'f', 1, 64)
+	s = strings.TrimSuffix(s, ".0")
+	return s + "万人在读"
+}
+
+// ComicDetailInfo 漫画详情（comic_tab/comic_detail/v 的 comic_data，10/04 实测）
 type ComicDetailInfo struct {
 	BookID      string
 	BookName    string

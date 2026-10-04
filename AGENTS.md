@@ -21,6 +21,7 @@
 |---|---|---|---|
 | 番茄·书城浏览/榜单（近似） | 网页端 fanqienovel.com | `server/internal/fanqie/client.go`、`searchweb.go`、`abogus.go` | 免登录抓取 + a_bogus 签名；被风控时负缓存 60s |
 | 番茄·App 书城 feed（真实排行榜） | unidbg 服务 | `server/internal/unidbg/unidbg.go` `HomeFeed()` | `GET /api/store/appfeed`；解析 bookmall/tab 推荐流 |
+| 番茄·分类页（标签树+书单） | unidbg 服务 | `unidbg.go` `CategoryFront/CategoryLanding` | `GET /api/store/categories` + `/api/store/categoryfeed`；new_category 协议（10/05 定案，档案 capture_xiaoshuo_1005） |
 | 番茄·搜索/详情/目录 | 搜索（10/05 起）：**TND 首选**（仅 offset=0，上游无翻页参数）→ App 协议（unidbg）→ 网页兜底；详情/目录仍 App 协议优先 → 网页兜底 | `handler/store.go` `Search`/`getBookDetail`/`getChapters`、`tnd.go` `Search` | TND 搜索直连官方基础设施（`GET /api/search?q=`，一次约 20 条，401 自动重登录）；搜索接口 `creation_status` 语义 1=完结 0=连载（同详情、与书城卡相反）。App 搜索在 NAS 偶发服务层 NPE（"Cannot read the array length"），网页兜底覆盖 |
 | 番茄·章节正文（在线读） | 按需回源：**当前只走 TND 范围任务（10/05 起，实测 ~5s/次）**；App 协议/真机签名桥/网页端三个通道由 `book.go` 顶部 const 开关临时关闭（恢复时改回 true） | `handler/book.go` `Chapter`+`fetchOnlineContents` | 读到哪章拉哪章并缓存（FillChapterContent），预取下一章；失败 402「稍后重试」。TND 可读「网页仅试读」的章。通道失败进健康记忆 10 分钟内跳过。关桥原因：桥不常开，每个健康窗口首笔正文白等 12s 拨号超时（10/05 前「新书首章 ~20s」即 12s 桥超时 + TND 叠加） |
 | 番茄·TND 按需单章（10/04 新增） | TND 范围任务（`/api/jobs` + `range_start/end`） | `tnd.go` `CreateRangeJob/WaitJob`、`book.go` `tndChapters` | 走番茄官方接口+闭源证件，读全量正文、无我们设备的风控压力；实测 8~15s/次。产物 `books/<fid>/status.json`（downloaded[item_id]=[章名,HTML]）或《书名》.epub，按 src_id 对号入座剥 HTML 入库。max_workers 已调 2 |
@@ -157,6 +158,13 @@ cd _reference/fqnovel-unidbg-src
    绕过①②强制回源并回写两级缓存（更新只跟随下拉刷新）；首屏因此毫秒级且完全
    绕开冷会话。空页重试仍保留在 `unidbg.FeedPage` 内（800ms 一次）。实测样本
    `_probe/store_feed_1004/`。
+10. **AVD 断网假象（10/05）**：模拟器 App 全卡启动页、状态栏 3G 时，先查
+    `adb shell ip route`——AVD 冷启动偶发丢 default 路由，修复 `adb root` +
+    `ip route add default via 10.0.2.2 dev eth0`。宿主防火墙挡 ICMP 转发，ping 不通
+    不代表断网，**判定用 TCP**（`nc -w3 -z 223.5.5.5 53`）。另：fq-unidbg 实际绑
+    `192.168.31.16:9999`（LAN IP），PC 可直连调试。
+
+## 8. 文件地图
 
 ```
 docs/NAS部署脚本.md            — NAS 部署全流程（compose 片段/运维/踩坑）
@@ -181,7 +189,17 @@ app/build/outputs/flutter-apk/  — 构建出的 APK
   `_reference/fqemu/capture_xiaoshuo_1004/FINDINGS.md`）。未做：漫画阅读进度持久化
 - 小说频道筛选瀑布流已接通（10/04，`/api/store/novelfeed`，`selected_items` 逗号多选，
   值如 finished/online_in_past_one_year/word_num_gt_200w/male/female/bian_ji_tui_jian）。
-  书城卡 `creation_status` 语义 0=完结 1=连载（与详情接口相反，勿再改回）旧结论已推翻（10/03 实测）：网页端只给试读 ≠ 付费章，App 协议匿名设备
+  书城卡 `creation_status` 语义 0=完结 1=连载（与详情接口相反，勿再改回）
+- 书城分类页已接通（10/05）：搜索框右侧「分类」按钮 → 男生/女生频道标签树
+  （热门标签/主题/角色/情节，点标签进书单页）+ 落地页（banner 语 + 相关分类词条 +
+  字数/状态/排序筛选 + 评分书单）。协议 `new_category/front/v:version/` +
+  `new_category/landing/v`（client_req_type 3=首屏/4=筛选/2=翻页；landing 的
+  selected_items 用 `creation_status_end`/`word_num_gte200` 风格值，与 bookmall 频道
+  筛选条的 `finished`/`word_num_gt_200w` **不通用**）。端点 `/api/store/categories` +
+  `/api/store/categoryfeed`；协议档案 `_reference/fqemu/capture_xiaoshuo_1005/FINDINGS.md`
+  （含 199 个 bookapi 路径清单 = 接新页面的第一手候选）。未做：听书/出版/短剧/漫画
+  分类频道（内容形态未接）
+- 「付费章」旧结论已推翻（10/03 实测）：网页端只给试读 ≠ 付费章，App 协议匿名设备
   可读（第 63 章实例，`_reference/fqemu/capture_xiaoshuo_1003/FINDINGS.md`）。
   未做：`book.go` 的 402 文案「该章节为会员内容」仍以网页 ErrChapterLocked 判定，误导，
   待改成中性文案；真正需要账号权益的章是否存在待遇见时再验证。

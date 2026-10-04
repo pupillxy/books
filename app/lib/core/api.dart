@@ -291,9 +291,16 @@ class ApiClient {
     return ComicDetailData.fromJson(j);
   }
 
-  /// 漫画单话图片列表
+  /// 漫画单话图片列表（proxy 为 server 解密代理的相对路径，这里拼成绝对地址）
   Future<ComicChapterContent> storeComicChapter(String bookId, String itemId) async {
     final j = await _get<Map<String, dynamic>>('/api/store/comics/$bookId/chapters/$itemId');
+    final images = (j['images'] as List?) ?? const [];
+    for (final e in images) {
+      if (e is Map && e['proxy'] is String) {
+        final p = e['proxy'] as String;
+        e['proxy'] = p.startsWith('http') ? p : '$baseUrl$p';
+      }
+    }
     return ComicChapterContent.fromJson(j);
   }
 

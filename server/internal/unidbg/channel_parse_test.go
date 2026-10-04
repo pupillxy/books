@@ -87,13 +87,13 @@ func TestEncryptedContentBlob(t *testing.T) {
 		enc[i] = 'A'
 	}
 	ok := `{"content":"` + string(enc) + `"}`
-	if encryptedContentBlob(json.RawMessage(ok)) == "" {
+	if c, _ := encryptedContentBlob(json.RawMessage(ok)); c == "" {
 		t.Fatal("密文应被识别")
 	}
-	if encryptedContentBlob(json.RawMessage(`{"content":"short"}`)) != "" {
+	if c, _ := encryptedContentBlob(json.RawMessage(`{"content":"short"}`)); c != "" {
 		t.Fatal("短内容不应视为密文")
 	}
-	if encryptedContentBlob(json.RawMessage(`{"content":"https://x.com/aAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}`)) != "" {
+	if c, _ := encryptedContentBlob(json.RawMessage(`{"content":"https://x.com/aAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}`)); c != "" {
 		t.Fatal("含 http 的内容不应视为密文")
 	}
 }

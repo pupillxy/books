@@ -802,7 +802,7 @@ class ComicChapterContent {
       );
 }
 
-/// 漫画页图片（CDN 签名直链，客户端直连加载）
+/// 漫画页图片（server 解密代理地址，CDN 原图为加密文件不能直连）
 class ComicImage {
   final String url;
   final int width;
@@ -811,7 +811,7 @@ class ComicImage {
   const ComicImage({required this.url, this.width = 0, this.height = 0});
 
   factory ComicImage.fromJson(Map<String, dynamic> j) => ComicImage(
-        url: (j['url'] ?? '') as String,
+        url: (j['proxy'] ?? j['url'] ?? '') as String,
         width: (j['width'] as num?)?.toInt() ?? 0,
         height: (j['height'] as num?)?.toInt() ?? 0,
       );

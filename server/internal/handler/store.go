@@ -1,8 +1,15 @@
 package handler
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"regexp"
@@ -27,6 +34,8 @@ type StoreHandler struct {
 	FQ  *fanqie.Client
 	TND *tnd.Client
 	UNI *unidbg.Client
+	// Secret 漫画图片代理 URL 的 HMAC 签名密钥（复用 JWTSecret；公开端点签名即鉴权）
+	Secret string
 
 	// 番茄抓取结果短缓存：详情页的封面是带 x-signature 的签名 URL，每次抓取都重新
 	// 生成（主机/签名都会变）。App 下载期间每 3s 轮询本接口，URL 一变客户端图片
@@ -1111,7 +1120,8 @@ func emitComicDetail(c *gin.Context, bookID string, info *unidbg.ComicDetailInfo
 }
 
 // ComicChapter 漫画单话图片列表：GET /api/store/comics/:bookID/chapters/:itemID
-// 整话图片 URL 一次下发（CDN 签名直链，客户端直连），无需落库缓存。
+// 上游图片 URL 是加密文件直链，这里签发成 /api/store/comicimg 代理地址
+// （server 实时下载 + AES-GCM 解密透传，App 零改动直接 Image.network 渲染）。
 func (h *StoreHandler) ComicChapter(c *gin.Context) {
 	if !h.UNI.Enabled() {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "unidbg 服务未配置（XS_UNIDBG_URL）"})
@@ -1123,12 +1133,123 @@ func (h *StoreHandler) ComicChapter(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "ID 无效"})
 		return
 	}
-	imgs, err := h.UNI.ComicChapterImages(bookID, itemID)
+	imgs, encKey, err := h.UNI.ComicChapterImages(bookID, itemID)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "获取漫画内容失败: " + err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"images": imgs})
+	out := make([]gin.H, 0, len(imgs))
+	for _, im := range imgs {
+		out = append(out, gin.H{
+			"url":    im.URL,
+			"width":  im.Width,
+			"height": im.Height,
+			"proxy":  h.signComicImg(im.URL, encKey),
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"images": out})
+}
+
+// comicImgProxyTTL 代理 URL 有效期（阅读一话足够长，过期重进详情页自动换新）
+const comicImgProxyTTL = 12 * time.Hour
+
+// signComicImg 生成漫画图片代理 URL（HMAC 签名即鉴权，载荷含 URL+密钥+时效）
+func (h *StoreHandler) signComicImg(rawurl, keyHex string) string {
+	expires := time.Now().Add(comicImgProxyTTL).Unix()
+	payload := rawurl + "|" + keyHex + "|" + strconv.FormatInt(expires, 10)
+	encoded := base64.RawURLEncoding.EncodeToString([]byte(payload))
+	mac := hmac.New(sha256.New, []byte(h.Secret))
+	mac.Write([]byte(encoded))
+	return "/api/store/comicimg?p=" + encoded + "&s=" + hex.EncodeToString(mac.Sum(nil))[:32]
+}
+
+// comicImgHTTP 漫画图 CDN 下载客户端（大图超时放宽）
+var comicImgHTTP = &http.Client{Timeout: 60 * time.Second}
+
+// ComicImg 漫画图片代理（公开端点，HMAC 签名即鉴权）：
+// 下载番茄 CDN 加密图 → AES-256-GCM 解密（文件 = nonce(12B)‖密文‖tag(16B)，
+// 密钥为该话 encrypt_key）→ 明文 JPEG 透传。10/04 Frida 实测 + md5 验证。
+func (h *StoreHandler) ComicImg(c *gin.Context) {
+	encoded := c.Query("p")
+	signature := c.Query("s")
+	if encoded == "" || signature == "" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "参数无效"})
+		return
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": "参数无效"})
+		return
+	}
+	mac := hmac.New(sha256.New, []byte(h.Secret))
+	mac.Write([]byte(encoded))
+	if hex.EncodeToString(mac.Sum(nil))[:32] != signature {
+		c.JSON(http.StatusForbidden, gin.H{"error": "签名无效"})
+		return
+	}
+	parts := strings.Split(string(payload), "|")
+	if len(parts) != 3 {
+		c.JSON(http.StatusForbidden, gin.H{"error": "参数无效"})
+		return
+	}
+	rawurl, keyHex, expiresStr := parts[0], parts[1], parts[2]
+	expires, err := strconv.ParseInt(expiresStr, 10, 64)
+	if err != nil || time.Now().Unix() > expires {
+		c.JSON(http.StatusForbidden, gin.H{"error": "代理地址已过期，请重新进入本话"})
+		return
+	}
+	if !strings.HasPrefix(rawurl, "https://") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "地址无效"})
+		return
+	}
+
+	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, rawurl, nil)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "地址无效"})
+		return
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	resp, err := comicImgHTTP.Do(req)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "拉取漫画图片失败"})
+		return
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "读取漫画图片失败"})
+		return
+	}
+
+	// 无密钥 = 未加密图（上游未启用加密时的兜底），原样透传
+	if keyHex == "" {
+		c.Data(http.StatusOK, "image/jpeg", data)
+		return
+	}
+	key, err := hex.DecodeString(keyHex)
+	if err != nil || len(key) != 32 || len(data) < 12+16 {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "漫画图片密钥无效"})
+		return
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "漫画图片解密失败"})
+		return
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "漫画图片解密失败"})
+		return
+	}
+	// 文件 = nonce(12B) ‖ 密文 ‖ tag(16B)；Go 约定 tag 附在密文尾部，AAD 为空
+	plain, err := gcm.Open(nil, data[:12], data[12:], nil)
+	if err != nil {
+		log.Printf("[store] 漫画图片解密失败（密钥/nonce 不匹配）: %v", err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "漫画图片解密失败"})
+		return
+	}
+	c.Header("Cache-Control", "private, max-age=86400")
+	c.Data(http.StatusOK, "image/jpeg", plain)
 }
 
 // Downloads 下载任务列表

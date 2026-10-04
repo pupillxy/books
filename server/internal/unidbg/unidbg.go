@@ -922,39 +922,55 @@ type ComicImage struct {
 }
 
 // ComicChapterImages 拉取漫画单话的整话图片列表（reader/full/v，参数与小说正文同形；
-// 10/03 实测整话图片一次下发）。上游若返回密文则走 unidbg decrypt-content 解密后再解析。
-func (c *Client) ComicChapterImages(bookID, itemID string) ([]ComicImage, error) {
+// 10/04 实测整话图片一次下发）。上游 data.content 为密文时走 unidbg decrypt-content
+// 解密（key_version 随响应下发）后解析 picInfos。同时返回该话 encrypt_key（hex）：
+// 图片 CDN 文件本身也是加密的（nonce(12B)||AES-256-GCM(ct||tag16)，密钥即 encrypt_key，
+// Frida hook 官方 App 实测 + picInfos.md5 逐张验证）。
+func (c *Client) ComicChapterImages(bookID, itemID string) ([]ComicImage, string, error) {
 	data, err := c.fetchApp("/reading/reader/full/v",
 		"book_id="+url.QueryEscape(bookID)+"&item_id="+url.QueryEscape(itemID))
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	imgs := extractComicImages(data)
 	if len(imgs) == 0 {
 		// 图片字段没找到且存在 content 密文 → 解密后重试（extractTextFromHtml 对无
 		// <blk> 标签的内容原样返回，JSON 可存活）
-		if enc := encryptedContentBlob(data); enc != "" {
-			plain, derr := c.decryptExternalContent(enc)
-			if derr != nil {
-				return nil, fmt.Errorf("漫画内容解密: %w", derr)
-			}
-			imgs = extractComicImages(json.RawMessage(plain))
+		enc, kv := encryptedContentBlob(data)
+		if enc == "" {
+			return nil, "", fmt.Errorf("漫画内容无图片数据")
 		}
+		plain, derr := c.decryptExternalContent(enc, kv)
+		if derr != nil {
+			return nil, "", fmt.Errorf("漫画内容解密: %w", derr)
+		}
+		imgs = extractComicImages(json.RawMessage(plain))
+		if len(imgs) == 0 {
+			return nil, "", fmt.Errorf("漫画内容无图片数据")
+		}
+		var cj struct {
+			EncryptKey string `json:"encrypt_key"`
+		}
+		_ = json.Unmarshal([]byte(plain), &cj)
+		return imgs, cj.EncryptKey, nil
 	}
-	if len(imgs) == 0 {
-		return nil, fmt.Errorf("漫画内容无图片数据")
-	}
-	return imgs, nil
+	return imgs, "", nil
 }
 
 // decryptExternalContent 调 unidbg /api/fqnovel/decrypt-content（密钥由服务端按需 registerkey）
-func (c *Client) decryptExternalContent(content string) (string, error) {
+func (c *Client) decryptExternalContent(content string, keyVersion *int64) (string, error) {
 	var out struct {
 		Code       int    `json:"code"`
 		TxtContent string `json:"txtContent"`
 	}
-	if err := c.postJSON("/api/fqnovel/decrypt-content", map[string]any{"content": content}, &out); err != nil {
+	// decrypt-content 返回扁平 {code,txtContent}，不是 {code,message,data} 信封，
+	// 不能走 postJSON（它只从 data 解包，会把成功响应当成空结果）
+	body, err := c.postRaw("/api/fqnovel/decrypt-content", map[string]any{"content": content, "keyVersion": keyVersion})
+	if err != nil {
 		return "", err
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return "", fmt.Errorf("解密响应解析: %w", err)
 	}
 	if out.Code != 0 || out.TxtContent == "" {
 		return "", fmt.Errorf("解密返回空")
@@ -962,18 +978,20 @@ func (c *Client) decryptExternalContent(content string) (string, error) {
 	return out.TxtContent, nil
 }
 
-// encryptedContentBlob 找 reader 响应里的密文字段（data.content，长 base64 无 http 字样）
-func encryptedContentBlob(data json.RawMessage) string {
+// encryptedContentBlob 找 reader 响应里的密文字段（data.content，长 base64 无 http 字样），
+// 连同 key_version 一起返回
+func encryptedContentBlob(data json.RawMessage) (string, *int64) {
 	var env struct {
-		Content string `json:"content"`
+		Content    string `json:"content"`
+		KeyVersion *int64 `json:"key_version"`
 	}
 	if err := json.Unmarshal(data, &env); err != nil {
-		return ""
+		return "", nil
 	}
 	if len(env.Content) > 100 && !strings.Contains(env.Content, "http") {
-		return env.Content
+		return env.Content, env.KeyVersion
 	}
-	return ""
+	return "", nil
 }
 
 // extractComicImages 在响应里宽容地找整话图片列表：取文档序中「元素为含 uri/url
@@ -1016,7 +1034,8 @@ func imageList(list []any) []ComicImage {
 			return nil // 混合类型列表不算
 		}
 		u := ""
-		for _, k := range []string{"uri", "url"} {
+		// picUrl：reader/full 解密后的漫画图列表字段（picInfos[].picUrl）
+		for _, k := range []string{"uri", "url", "picUrl"} {
 			if s, ok := m[k].(string); ok && strings.HasPrefix(s, "http") {
 				u = s
 				break

@@ -82,9 +82,29 @@
   - 书卡字段与 HomeFeed 同族：book_id/book_name/author/category/word_number/score/thumb_url/tags…
 - 同时刻 tab/v 回放 110 —— **server 接筛选频道应走纯 cell/change 架构**（同推荐页定案）
 
-## 5. 对接提示（App 端「小说/漫画频道」若要复刻）
+## 5. ⭐ 漫画图片文件加密算法（10/04 Frida hook 定案，md5 逐张验证）
 
-- 频道首屏：回放 `tab/v?tab_type=25/9`（或首屏直接用 cell/change offset=0）
-- 筛选：`selected_items` 逗号多选；值可直接写死上表；翻页 offset=响应 next_offset
-- 漫画阅读：reader/full/v 的图片列表在 `data` 内（字段名待接时核对），CDN 直链无需签名
-- 风控纪律：tab/v 能不用就不用；cell/change 相对皮实，但同样要 3s/批限速
+CDN 图片直链下载后**不是明文图片**（header 无 jpeg/png 魔数，每张不同、高熵）：
+
+- **文件布局**：`nonce(12B) ‖ AES-256-GCM 密文 ‖ tag(16B)`（GCM 流式，长度任意）
+- **密钥**：该话 `encrypt_key`（64 hex 字符 = 32B），随 reader/full 密文 content
+  解密后的 JSON 下发（与 picInfos/lowPicInfos 同级）。结构 = 固定前缀
+  `"1967196719671967"`（ASCII，aid=1967）+ 每话 16B 变量，全话所有图共用
+- **nonce** = 文件自身前 12 字节（服务端下发时就地前缀，无需额外传递）
+- 明文 = 标准 JPEG（`ffd8ffdb` 开头），md5 == picInfos[].md5 ✓
+- hook 实测：`javax.crypto` AES/GCM/NoPadding，key=32B，单图 40-80 万字节级调用
+- **Go 实现坑**：`gcm.Open(nil, nonce, data[12:], nil)` —— tag 必须附在密文尾部
+  一起传入（第 4 参是 AAD；把 tag 单独当 AAD 传会 message authentication failed）
+
+reader/full 响应结构（10/04 全量）：`data.content`=密文(base64)、`data.key_version`
+（解密用，传给 decrypt-content）、`data.crypt_status/text_type/parse_mode` 等元数据、
+`data.novel_data`=书籍信息卡。解密后 JSON：`{itemId, picInfos[], encrypt:true,
+encrypt_key, lowPicInfos[]}`（picInfos 元素 = picUrl/width/height/md5）。
+
+## 6. server/App 实施状态（同日）
+
+- `/api/store/comicimg`（公开端点，HMAC 签名即鉴权，同短剧 stream/cover 模式）：
+  server 实时下载 CDN 加密图 → GCM 解密 → 明文 JPEG 透传；`/comics/:id/chapters/:itemID`
+  返回签名代理地址（12h 时效），App Image.network 零改动
+- 端到端验证：novelfeed/comicfeed/漫画详情/话列表全通；单话图片 md5 吻合；
+  模拟器装机 UI 验证三频道+详情+阅读器（图片渲染待 reader/full 风控冷却后复核）

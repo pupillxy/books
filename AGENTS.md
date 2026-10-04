@@ -152,8 +152,9 @@ app/build/outputs/flutter-apk/  — 构建出的 APK
   旧「动态 lynx 模板」方案已弃）
 - 漫画频道已接通（10/04）：书城三频道（推荐/小说/漫画），`/api/store/comicfeed`
   + `/api/store/comics/:id`（详情+话列表）+ `/api/store/comics/:id/chapters/:itemID`
-  （整话图片，reader/full 宽容解析 + decrypt-content 密文兜底）；协议档案
-  `_reference/fqemu/capture_xiaoshuo_1003|1004/FINDINGS.md`。未做：漫画阅读进度持久化
+  （整话图片走 `/api/store/comicimg` 解密代理——**图片文件本身是 AES-256-GCM 加密**，
+  文件=nonce(12B)‖密文‖tag(16B)，密钥=该话 encrypt_key，算法档案
+  `_reference/fqemu/capture_xiaoshuo_1004/FINDINGS.md`）。未做：漫画阅读进度持久化
 - 小说频道筛选瀑布流已接通（10/04，`/api/store/novelfeed`，`selected_items` 逗号多选，
   值如 finished/online_in_past_one_year/word_num_gt_200w/male/female/bian_ji_tui_jian）。
   书城卡 `creation_status` 语义 0=完结 1=连载（与详情接口相反，勿再改回）

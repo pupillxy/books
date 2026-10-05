@@ -317,7 +317,13 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
       case '漫画':
         await _loadComicPage(reset: true);
       default:
-        _ensureBoard(_boardKeys[_rankTabIdx]!);
+        // 下拉刷新强制重拉当前性别的榜单（_ensureBoard 有缓存本来会跳过，
+        // 这里清掉当前性别的缓存条目——其他性别的缓存保留，切换仍秒出）
+        final g = ref.read(storeGenderProvider);
+        _boardBooks.removeWhere((k, _) => k.startsWith('${g}_'));
+        for (final k in _boardKeys.values) {
+          _ensureBoard(k);
+        }
         await _loadGuessPage(reset: true, forceRefresh: true);
     }
   }

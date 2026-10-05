@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:package_info_plus/package_info_plus.dart';
@@ -12,9 +13,9 @@ import 'mo_theme.dart';
 
 /// 应用内更新。
 ///
-/// - 检查源固定为**生产通道**（/api/app/latest）：dev 包（与生产并排安装、包名
-///   `.dev`）也替生产 App 查更新——下载的是生产 APK，系统安装器直接更新手机上的
-///   「小说阅读」，dev 包自身不动。dev 通道（apks/dev/）仅作测试分发，App 不消费。
+/// - 检查源固定为**生产通道**（/api/app/latest）：测试包（debug 构建，包名 `.dev`，
+///   与生产并排安装）也替生产 App 查更新——下载的是生产 APK，系统安装器直接更新
+///   手机上的「小说阅读」，测试包自身不动。dev 通道（apks/dev/）仅作分发，App 不消费。
 /// - 每天首次进入 App 自动查一次（本地日期 gate，SharedPreferences 持久化）；
 ///   设置页「检查更新」可手动查，有结果反馈。
 /// - 流程：弹窗[立即更新 / 下次提示] → 下载进度 → [点击安装] → 系统安装器。
@@ -84,7 +85,7 @@ class AppUpdate {
     final notes = (data['notes'] ?? '') as String;
     final size = (data['size'] as num?)?.toInt() ?? 0;
     final sizeText = size > 0 ? ' · ${(size / (1 << 20)).toStringAsFixed(1)}MB' : '';
-    final isDevApp = kAppChannel == 'dev';
+    final isDevApp = kDebugMode; // debug 构建 = 测试包（包名 .dev）
     showDialog<void>(
       context: context,
       barrierDismissible: true,

@@ -1,9 +1,9 @@
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
-import '../core/app_update.dart';
 import '../core/mo_theme.dart';
 
 /// 通用小部件
@@ -575,7 +575,7 @@ class VersionFooter extends StatelessWidget {
       future: PackageInfo.fromPlatform(),
       builder: (ctx, snap) {
         final info = snap.data;
-        final dev = kAppChannel == 'dev';
+        final dev = kDebugMode; // debug 构建 = 测试包
         return Text.rich(
           TextSpan(
             children: [

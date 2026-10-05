@@ -25,31 +25,20 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
-    }
-
-    // 渠道：dev=测试包（默认！包名 .dev 后缀，与正式包并排共存互不覆盖，桌面名
-    // "小说阅读 Dev"，versionName 带 -dev）；prod=正式包（必须显式 --flavor prod）。
-    // dev 包同时经 --dart-define=APP_CHANNEL=dev 走 dev 更新通道。
-    // 声明顺序 dev 在前 = Studio 同步后默认选中 devDebug（Run 按钮即装 dev 包）；
-    // 裸 CLI 构建（不带 --flavor）会同时出 dev+prod 两个 apk，发版一律走 build_all.ps1。
-    flavorDimensions "env"
-    productFlavors {
-        dev {
-            dimension "env"
-            applicationIdSuffix ".dev"
-            versionNameSuffix "-dev"
-            resValue "string", "app_name", "小说阅读 Dev"
-        }
-        prod {
-            dimension "env"
-            resValue "string", "app_name", "小说阅读"
-        }
+        resValue "string", "app_name", "小说阅读"
     }
 
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
+            // 生产包：包名/名称无后缀。发版走 build_all.ps1（flutter build apk --release）
+            signingConfig = signingConfigs.debug
+        }
+        debug {
+            // 测试包（Studio Run 默认即此）：包名 .dev 后缀与生产并排共存，
+            // 桌面名"小说阅读 Dev"，versionName 带 -dev。日常开发永远只碰这个包
+            applicationIdSuffix ".dev"
+            versionNameSuffix "-dev"
+            resValue "string", "app_name", "小说阅读 Dev"
             signingConfig = signingConfigs.debug
         }
     }

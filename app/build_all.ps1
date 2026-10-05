@@ -36,8 +36,8 @@ param(
     [Parameter(Mandatory=$false)]
     [string]$UploadToken = "e5361412d64151c5f1306aabba640e98",
 
-    # 测试包：--dart-define=APP_CHANNEL=dev，上传到 dev 更新通道（apks/dev/），
-    # 只推给 DEV 包，生产包不受影响；设置页显示 DEV 角标
+    # 测试包：debug 构建（包名 .dev 后缀，与生产并排共存），上传到 dev 更新通道；
+    # 只推给 DEV 包，生产包不受影响
     [switch]$Dev,
 
     [switch]$SkipServer
@@ -157,16 +157,25 @@ Push-Location $projectRoot
 # to "Continue" and judge success by $LASTEXITCODE + expected output file.
 $savedEAP = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
-# dev 测试包：独立包名（.dev 后缀）与生产并排共存 + dart-define 走 dev 更新通道
-$flavor = if ($Dev) { "dev" } else { "prod" }
-$dartDefine = if ($Dev) { "--dart-define=APP_CHANNEL=dev" } else { "" }
-& flutter build apk --release --flavor $flavor $dartDefine 2>&1 | Out-Null
+# -Dev = debug 测试包（.dev 包名，与生产并排共存）；默认 = release 生产包
+# 参数必须写字面量分支：PS 5.1 数组展开/插值传参给 flutter 会把 --xxx 传坏
+if ($Dev) {
+    $output = & flutter build apk --debug --dart-define=APP_CHANNEL=dev 2>&1
+} else {
+    $output = & flutter build apk --release 2>&1
+}
 $apkBuildExit = $LASTEXITCODE
+$output | Out-File (Join-Path $projectRoot "build_apk_log.txt") -Encoding utf8
 $ErrorActionPreference = $savedEAP
-if ($apkBuildExit -ne 0) { Write-Err "flutter build apk failed"; Pop-Location; exit 1 }
+if ($apkBuildExit -ne 0) {
+    Write-Err "flutter build apk failed (log: build_apk_log.txt)"
+    Get-Content (Join-Path $projectRoot "build_apk_log.txt") -Tail 15 | ForEach-Object { Write-Err "    $_" }
+    Pop-Location; exit 1
+}
 Pop-Location
 
-$apkPath = Join-Path $projectRoot "build\app\outputs\flutter-apk\app-$flavor-release.apk"
+$apkName = if ($Dev) { "app-debug.apk" } else { "app-release.apk" }
+$apkPath = Join-Path $projectRoot "build\app\outputs\flutter-apk\$apkName"
 if (-not (Test-Path $apkPath)) { Write-Err "APK not found: $apkPath"; exit 1 }
 $apkSize = (Get-Item $apkPath).Length
 Write-Ok "Android APK: $apkPath ($([math]::Round($apkSize/1MB,1)) MB)"

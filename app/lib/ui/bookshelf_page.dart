@@ -329,17 +329,7 @@ class _BookshelfPageState extends ConsumerState<BookshelfPage>
           physics: const AlwaysScrollableScrollPhysics(),
           slivers: [
             // ---------- 页头（固定常驻）----------
-            MoPinnedHeader(
-              child: PageHeader(title: '书架', actions: [
-                IconButton(
-                  tooltip: '去书城添加',
-                  onPressed: () => Navigator.of(context)
-                      .push(MaterialPageRoute(builder: (_) => const StorePage())),
-                  icon: Icon(Icons.add_circle_outline,
-                      color: Theme.of(context).colorScheme.onSurfaceVariant),
-                ),
-              ]),
-            ),
+            const MoPinnedHeader(child: PageHeader(title: '书架')),
             if (items.isEmpty && _local.isEmpty)
               SliverFillRemaining(
                 hasScrollBody: false,

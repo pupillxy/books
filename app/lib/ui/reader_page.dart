@@ -589,6 +589,14 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
                         style: TextStyle(fontSize: 11.5, color: cs.outline),
                       ),
                     ),
+                    IconButton(
+                      tooltip: '搜索章节',
+                      icon: const Icon(Icons.search, size: 20),
+                      onPressed: () {
+                        Navigator.pop(ctx);
+                        _openChapterSearch();
+                      },
+                    ),
                   ],
                 ),
               ),
@@ -1294,10 +1302,122 @@ class _ReaderPageState extends ConsumerState<ReaderPage> {
                       fontSize: 15, fontWeight: FontWeight.w700, color: theme.fg),
                 ),
               ),
+              IconButton(
+                tooltip: '搜索章节',
+                icon: Icon(Icons.search, size: 21, color: theme.fg),
+                onPressed: _openChapterSearch,
+              ),
             ],
           ),
         ),
       ),
+    );
+  }
+
+  // ---------- 章节搜索（搜章节名，在线书/本地书通用）----------
+
+  void _openChapterSearch() {
+    final cs = Theme.of(context).colorScheme;
+    final ctl = TextEditingController();
+    var query = '';
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: cs.surface,
+      builder: (ctx) {
+        final h = MediaQuery.of(ctx).size.height;
+        return StatefulBuilder(
+          builder: (ctx, setSheet) => Padding(
+            padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom),
+            child: SizedBox(
+              height: h * 0.72,
+              child: Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+                    child: TextField(
+                      controller: ctl,
+                      autofocus: true,
+                      textInputAction: TextInputAction.search,
+                      decoration: InputDecoration(
+                        hintText: '搜索章节名',
+                        prefixIcon: const Icon(Icons.search, size: 20),
+                        isDense: true,
+                        filled: true,
+                        fillColor: Theme.of(ctx).colorScheme.surfaceContainerHighest,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide.none,
+                        ),
+                      ),
+                      onChanged: (v) {
+                        query = v;
+                        setSheet(() {});
+                      },
+                    ),
+                  ),
+                  const Divider(height: 1),
+                  Expanded(
+                    child: FutureBuilder<List<ChapterMeta>>(
+                      future: _ensureToc(),
+                      builder: (context, snap) {
+                        if (!snap.hasData) {
+                          return const Center(child: CircularProgressIndicator());
+                        }
+                        final q = query.trim().toLowerCase();
+                        final list = q.isEmpty
+                            ? snap.data!
+                            : snap.data!
+                                .where((c) => c.title.toLowerCase().contains(q))
+                                .toList();
+                        if (list.isEmpty) {
+                          return Center(
+                              child: Text('没有匹配的章节',
+                                  style: TextStyle(
+                                      fontSize: 13, color: cs.outline)));
+                        }
+                        return ListView.builder(
+                          itemExtent: 48,
+                          padding: const EdgeInsets.only(bottom: 24),
+                          itemCount: list.length,
+                          itemBuilder: (context, i) {
+                            final ch = list[i];
+                            final cur = ch.idx == _chapterIdx;
+                            return ListTile(
+                              dense: true,
+                              contentPadding:
+                                  const EdgeInsets.symmetric(horizontal: 20),
+                              title: Text(
+                                '${ch.idx + 1}. ${ch.title}',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: 13.5,
+                                  fontWeight:
+                                      cur ? FontWeight.w700 : FontWeight.w400,
+                                  color: cur ? cs.primary : cs.onSurfaceVariant,
+                                ),
+                              ),
+                              trailing: cur
+                                  ? Icon(Icons.play_circle_outline,
+                                      size: 16, color: cs.primary)
+                                  : null,
+                              onTap: () {
+                                Navigator.pop(ctx);
+                                _loadChapter(ch.idx);
+                              },
+                            );
+                          },
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 

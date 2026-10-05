@@ -117,15 +117,17 @@ cd _reference/fqnovel-unidbg-src
   ——自动 bump pubspec build 号（=versionCode）→ flutter build apk → HTTP 上传
   `/api/app/upload`（X-Upload-Token = compose 的 `XS_UPLOAD_TOKEN`，未配置则通道禁用），
   server 落盘 `xiaoshuo-<版本>.apk` 并自动重写 latest.json；`-SkipServer` 只打包。
-  **dev/prod 双渠道（10/05，10/06 完善默认指向）**：`-Dev` 开关 = `--flavor dev`
-  （applicationId 加 `.dev` 后缀 → 与生产包并排共存互不覆盖，桌面名"小说阅读 Dev"，
-  versionName 带 `-dev`）+ `--dart-define=APP_CHANNEL=dev` + notes 自动加 `[DEV]` 前缀。
-  **flavor 声明顺序 dev 在前**（Studio sync 后默认 variant = devDebug，Run 按钮默认
-  装 dev 包）；AGP 自带聚合任务 assembleDebug/assembleRelease（同名任务不可重复注册，
-  会报 "Cannot add task"），裸 CLI 构建会同时出 dev+prod 两个 apk。flavor 产物路径：
-  `flutter-apk/app-<flavor>-release.apk`（扁平）。**dev 包的更新检查也走生产通道**
-  （下载生产 APK 更新手机上的正式版，dev 包自身不动；dev 通道 apks/dev/ 仅作分发，
-  App 不消费）。
+  **dev/prod 双包（10/06 定稿：buildType 区分，无 flavor）**：debug 构建型 = 测试包
+  （applicationId 加 `.dev` 后缀、桌面名"小说阅读 Dev"、versionName 带 `-dev`），
+  **Studio Run ▶ 默认就是它**——零配置直装，与生产包并排共存（music 项目同款体验）；
+  release = 生产包（无后缀）。曾试过 productFlavors 方案，因 Studio 需手选 variant
+  且 Android App 运行配置无 Build Flavor 字段而放弃。发版脚本：`-Dev` 走
+  `--debug --dart-define=APP_CHANNEL=dev`，默认 `--release`；产物
+  `flutter-apk/app-debug.apk` / `app-release.apk`。**dev 测试包的更新检查也走生产
+  通道**（下载生产 APK 更新手机上的正式版，测试包自身不动；dev 通道 apks/dev/ 仅作
+  分发）。测试包 DEV 角标/文案用 kDebugMode 判定（buildType 编译期常量）。
+  坑：PS 5.1 给 flutter 传参必须写字面量分支——数组展开/`--$var` 插值会把参数传坏
+  （flutter 报 Target file "-" not found）；构建输出落盘 build_apk_log.txt 排错。
   **build_all.ps1 必须 UTF-8 带 BOM**（PowerShell 5.1 无 BOM 按 GBK 解码，中文注释会
   打碎后续字符串解析报"缺少终止符"）——用 python 改它时用 `utf-8-sig` 写回。
   Version 参数必须三段式（1.1.2），脚本已校验（两段式如 1.0 会让 pubspec 非法、

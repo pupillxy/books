@@ -51,10 +51,15 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
     3: 'new',
   };
   int _rankTabIdx = 0;
+  // 榜单缓存键带性别（男/女各一份，来回切换秒出不再进骨架屏）
   final Map<String, List<LibraryBook>> _boardBooks = {};
   final Set<String> _boardLoading = {};
   final Map<String, String?> _boardErrors = {};
+  final Map<String, List<StoreCategoryTag>> _catsCache = {};
   List<StoreCategoryTag> _catTags = const []; // 分类直达（App 协议标签树第一组）
+
+  String get _g => ref.read(storeGenderProvider);
+  String _ck(String boardKey) => '${_g}_$boardKey';
 
   // 焦点轮播：当前榜 Top3 自动轮播
   final _heroCtrl = PageController();
@@ -108,26 +113,28 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
     super.dispose();
   }
 
-  /// 分类直达：App 协议标签树第一组（热门标签）前 12 个
+  /// 分类直达：App 协议标签树第一组（热门标签）前 12 个（按性别缓存）
   Future<void> _loadCats() async {
+    final g = _g;
+    if (_catsCache.containsKey(g)) {
+      setState(() => _catTags = _catsCache[g]!);
+      return;
+    }
     try {
-      final data = await _api.storeCategories(
-          gender: ref.read(storeGenderProvider) == '0' ? 0 : 1);
+      final data = await _api.storeCategories(gender: g == '0' ? 0 : 1);
       if (!mounted || data.groups.isEmpty) return;
-      setState(() {
-        _catTags = data.groups.first.tags.take(12).toList();
-      });
+      _catsCache[g] = data.groups.first.tags.take(12).toList();
+      setState(() => _catTags = _catsCache[g]!);
     } on ApiException {
       // 静默：分类直达区块隐藏
     }
   }
 
-  /// 男/女频道切换：清榜单缓存重取（榜单按性别取数）
+  /// 男/女频道切换：榜单按性别分桶缓存——切回看过的性别秒出（不进骨架屏），
+  /// 只有没看过的性别才走网络补拉
   void _switchGender(String g) {
-    final cur = ref.read(storeGenderProvider);
-    if (cur == g) return;
+    if (_g == g) return;
     ref.read(storeGenderProvider.notifier).set(g);
-    _boardBooks.clear();
     _heroIdx = 0;
     for (final k in _boardKeys.values) {
       _ensureBoard(k);
@@ -147,7 +154,7 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
   }
 
   List<LibraryBook> get _bannerBooks {
-    final books = _boardBooks[_boardKeys[_rankTabIdx]] ?? const <LibraryBook>[];
+    final books = _boardBooks[_ck(_boardKeys[_rankTabIdx]!)] ?? const <LibraryBook>[];
     return books.length > 3 ? books.sublist(0, 3) : books;
   }
 
@@ -608,23 +615,23 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
 
   // ── 子榜数据 ────────────────────────────────────────────────────
   void _ensureBoard(String key) {
-    if (key.isEmpty || _boardBooks.containsKey(key) || _boardLoading.contains(key)) {
+    final ck = _ck(key);
+    if (key.isEmpty || _boardBooks.containsKey(ck) || _boardLoading.contains(ck)) {
       return;
     }
-    _boardLoading.add(key);
-    setState(() => _boardErrors[key] = null);
-    _api.storeFeaturedBooks(key,
-            gender: ref.read(storeGenderProvider), limit: 16).then((books) {
+    _boardLoading.add(ck);
+    setState(() => _boardErrors[ck] = null);
+    _api.storeFeaturedBooks(key, gender: _g, limit: 16).then((books) {
       if (!mounted) return;
       setState(() {
-        _boardBooks[key] = books;
-        _boardLoading.remove(key);
+        _boardBooks[ck] = books;
+        _boardLoading.remove(ck);
       });
     }).catchError((e) {
       if (!mounted) return;
       setState(() {
-        _boardLoading.remove(key);
-        _boardErrors[key] = e is ApiException ? e.message : '$e';
+        _boardLoading.remove(ck);
+        _boardErrors[ck] = e is ApiException ? e.message : '$e';
       });
     });
   }
@@ -637,7 +644,8 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
 
   /// 横向书架区块（完本精选/新书速递）：榜单数据 App 协议
   Widget _shelfSection(String title, String boardKey) {
-    final books = _boardBooks[boardKey] ?? const <LibraryBook>[];
+    final books = _boardBooks[_ck(boardKey)] ?? const <LibraryBook>[];
+    final loading = _boardLoading.contains(_ck(boardKey));
     final dpr = MediaQuery.devicePixelRatioOf(context);
     return Padding(
       padding: const EdgeInsets.fromLTRB(18, 16, 18, 0),
@@ -653,7 +661,7 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
           const SizedBox(height: 10),
           SizedBox(
             height: 182,
-            child: books.isEmpty && _boardLoading.contains(boardKey)
+            child: books.isEmpty && loading
                 ? const ShelfSkeleton()
                 : ListView.builder(
                     scrollDirection: Axis.horizontal,

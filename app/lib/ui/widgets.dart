@@ -1,7 +1,9 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
+import '../core/app_update.dart';
 import '../core/mo_theme.dart';
 
 /// 通用小部件
@@ -478,6 +480,129 @@ class MoTabBar extends StatelessWidget {
         labelStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
         unselectedLabelStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
       ),
+    );
+  }
+}
+
+/// 白底圆角菜单卡（我的/设置页共用）
+class MenuCard extends StatelessWidget {
+  const MenuCard({super.key, required this.children});
+
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Container(
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(
+        color: cs.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: cs.outlineVariant, width: 0.8),
+      ),
+      child: Column(children: children),
+    );
+  }
+}
+
+/// 菜单行
+class MenuTile extends StatelessWidget {
+  const MenuTile({
+    super.key,
+    required this.icon,
+    required this.title,
+    this.subtitle,
+    this.danger = false,
+    this.onTap,
+  });
+
+  final IconData icon;
+  final String title;
+  final String? subtitle;
+  final bool danger;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final color = danger ? MoStyle.danger : cs.onSurfaceVariant;
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 15),
+        child: Row(
+          children: [
+            Icon(icon, size: 20, color: color),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title,
+                      style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600, color: color)),
+                  if (subtitle != null && subtitle!.isNotEmpty) ...[
+                    const SizedBox(height: 2),
+                    Text(subtitle!,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(fontSize: 11, color: cs.outline)),
+                  ],
+                ],
+              ),
+            ),
+            Icon(Icons.chevron_right, size: 20, color: cs.outline),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 菜单行分隔线（缩进对齐图标后文字）
+Widget menuDivider(ColorScheme cs) => Padding(
+      padding: const EdgeInsets.only(left: 52),
+      child: Container(height: 0.8, color: cs.outlineVariant),
+    );
+
+/// 版本脚注（dev 渠道带橙色 DEV 角标）
+class VersionFooter extends StatelessWidget {
+  const VersionFooter({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return FutureBuilder<PackageInfo>(
+      future: PackageInfo.fromPlatform(),
+      builder: (ctx, snap) {
+        final info = snap.data;
+        final dev = kAppChannel == 'dev';
+        return Text.rich(
+          TextSpan(
+            children: [
+              TextSpan(
+                  text: '墨笺 · v${info?.version ?? '?'}+${info?.buildNumber ?? '?'}',
+                  style: TextStyle(fontSize: 11.5, color: cs.outline)),
+              if (dev)
+                WidgetSpan(
+                  alignment: PlaceholderAlignment.middle,
+                  child: Container(
+                    margin: const EdgeInsets.only(left: 6),
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
+                    decoration: BoxDecoration(
+                      color: MoStyle.primary,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: const Text('DEV',
+                        style: TextStyle(
+                            fontSize: 9,
+                            fontWeight: FontWeight.w800,
+                            color: Colors.white)),
+                  ),
+                ),
+            ],
+          ),
+        );
+      },
     );
   }
 }

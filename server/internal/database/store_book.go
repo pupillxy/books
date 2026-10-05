@@ -153,6 +153,12 @@ func (s *DBStore) SetBookMeta(bookID int64, title, author, cover, intro string) 
 	return err
 }
 
+// UpdateBookCover 刷新封面直链（书架封面签名过期自愈：详情刷新换新链后回写，见 handler/storeimg.go）
+func (s *DBStore) UpdateBookCover(bookID int64, cover string) error {
+	_, err := s.Exec(`UPDATE books SET cover=? WHERE id=?`, cover, bookID)
+	return err
+}
+
 // ListUnfinishedFanqieBooks 追更对象：绑定了番茄 ID 且未完结的书（不含漫画）
 func (s *DBStore) ListUnfinishedFanqieBooks() ([]*model.Book, error) {
 	rows, err := s.Query(`SELECT ` + bookCols + ` FROM books WHERE fanqie_id != '' AND source != 'comic' AND finished = 0`)

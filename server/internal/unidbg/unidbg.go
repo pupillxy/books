@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -533,6 +534,19 @@ func countLeafCards(cells []tabCell) int {
 
 // ─── App 协议榜单（2026-10-03 官方 App 抓包对齐，档案 _reference/fqemu/capture_xiaoshuo_1003）───
 
+// upstreamCodeError 上游业务码错误（HTTP 200 但 code≠0）。与设备风控区分：
+// SERVICE_ERROR（101116）这类瞬时码实测分钟级自愈（10/05 漫画频道故障窗口），
+// 调用方可就地重试一次；设备风控码交给 isRiskControl 分支处理。
+type upstreamCodeError struct {
+	Path    string
+	Code    int
+	Message string
+}
+
+func (e *upstreamCodeError) Error() string {
+	return fmt.Sprintf("app fetch %s 上游 code=%d %s", e.Path, e.Code, e.Message)
+}
+
 // fetchApp 通用 App 协议回放：通过 /api/fqapp/fetch 代签代发任意 bookapi 端点。
 // query 只带业务参数——设备参数（iid/device_id/cdid 等）由 Java 服务注入，
 // 调用方带同名参数会覆盖设备配置导致签名失效。设备风控时与 HomeFeed 同策略自愈。
@@ -558,7 +572,7 @@ func (c *Client) fetchApp(path, query string) (json.RawMessage, error) {
 				return c.fetchApp(path, query)
 			}
 		}
-		return nil, fmt.Errorf("app fetch %s 上游 code=%d %s", path, env.Code, env.Message)
+		return nil, &upstreamCodeError{Path: path, Code: env.Code, Message: env.Message}
 	}
 	return env.Data, nil
 }
@@ -704,7 +718,18 @@ func (c *Client) FeedPage(cellID, planID string, offset int) ([]FeedBook, int, b
 // 只能手动下拉恢复），重试仍空才按空页返回。
 func cellChangeFeed[T any](c *Client, query string, parse func(json.RawMessage) (T, int, bool, error), isEmpty func(T) bool) (T, int, bool, error) {
 	books, next, more, err := cellChangeOnce(c, query, parse)
-	if err == nil && isEmpty(books) {
+	// 两类瞬时异常就地重试一次（800ms），重试仍失败才按原结果返回：
+	// ① 冷会话软空页（code=0 无卡片，10/04 实测）；② 瞬时业务错误
+	// （code=101116 SERVICE_ERROR，10/05 漫画频道故障窗口分钟级自愈）。
+	// 设备风控码不在此列：重试只会放大请求，交给冷却自愈。
+	retry := err == nil && isEmpty(books)
+	if err != nil {
+		var ue *upstreamCodeError
+		if errors.As(err, &ue) && !isRiskControl(ue.Code, ue.Message) {
+			retry = true
+		}
+	}
+	if retry {
 		time.Sleep(800 * time.Millisecond)
 		if b2, n2, m2, err2 := cellChangeOnce(c, query, parse); err2 == nil && !isEmpty(b2) {
 			return b2, n2, m2, nil

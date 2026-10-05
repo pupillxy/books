@@ -82,6 +82,9 @@ func (h *BookHandler) List(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询失败"})
 		return
 	}
+	for _, b := range books {
+		rewriteShelfCover(c, b)
+	}
 	c.JSON(http.StatusOK, gin.H{"total": total, "page": page, "size": size, "items": books})
 }
 
@@ -105,6 +108,7 @@ func (h *BookHandler) Detail(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询章节失败"})
 		return
 	}
+	rewriteShelfCover(c, book)
 	c.JSON(http.StatusOK, gin.H{"book": book, "chapters": chapters})
 }
 
@@ -522,6 +526,9 @@ func (h *ShelfHandler) List(c *gin.Context) {
 	}
 	if items == nil {
 		items = []*database.ShelfItem{}
+	}
+	for _, it := range items {
+		rewriteShelfCover(c, it.Book)
 	}
 	c.JSON(http.StatusOK, items)
 }

@@ -569,6 +569,9 @@ class _FanqiePageState extends ConsumerState<FanqiePage> {
         SizedBox(
           height: 4 * 96.0,
           child: PageView(
+            // 预构建相邻页：第二页 8 张封面在空闲期提前加载，横滑不再因
+            // 图片连接+解码掉帧（allowImplicitScrolling 会缓存相邻页状态）
+            allowImplicitScrolling: true,
             onPageChanged: (page) => setState(() => _rankPage = page),
             children: [
               for (var p = 0; p < pageBooks.length; p++)

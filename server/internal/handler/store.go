@@ -71,6 +71,12 @@ type StoreHandler struct {
 	// 分类书单页缓存（key 含分类/筛选/offset）：同 cellFeed 缓存策略
 	catFeedMu    sync.Mutex
 	catFeedCache map[string]catFeedEntry
+
+	// 图片代理（storeimg.go）：磁盘缓存目录 + 上游闸门 + 独立 HTTP 客户端，惰性初始化
+	imgOnce sync.Once
+	imgDir  string
+	imgGate *coverGate
+	imgHTTP *http.Client
 }
 
 const rankBatchTTL = 2 * time.Minute
@@ -241,19 +247,21 @@ func (h *StoreHandler) LibraryBooks(c *gin.Context) {
 			books[i].LocalStatus = bk.Status
 		}
 	}
+	h.rewriteLibraryCovers(c, books)
 	c.JSON(http.StatusOK, gin.H{"items": books, "has_more": len(books) >= size})
 }
 
 // ─── App 源（模拟器签名 oracle）───────────────────────────────────────
 
-// markBooks 标记哪些书已在书库（搜索结果用）
-func (h *StoreHandler) markBooks(books []fanqie.LibraryBook) {
+// markBooks 标记哪些书已在书库（搜索结果用），并顺带把封面出参改写为代理地址
+func (h *StoreHandler) markBooks(c *gin.Context, books []fanqie.LibraryBook) {
 	for i := range books {
 		if bk, err := h.DB.GetBookByFanqieID(books[i].ID); err == nil {
 			books[i].InLibrary = true
 			books[i].LocalBookID = bk.ID
 		}
 	}
+	h.rewriteLibraryCovers(c, books)
 }
 
 // Search 书城搜索（10/05 起 TND 首选）：TND 直连番茄官方基础设施、无设备风控
@@ -286,7 +294,7 @@ func (h *StoreHandler) Search(c *gin.Context) {
 				})
 			}
 			books = books[:minInt(count, len(books))]
-			h.markBooks(books)
+			h.markBooks(c, books)
 			c.JSON(http.StatusOK, gin.H{"items": books})
 			return
 		} else if err != nil {
@@ -325,7 +333,7 @@ func (h *StoreHandler) Search(c *gin.Context) {
 		}
 		books = books[:minInt(count, len(books))]
 	}
-	h.markBooks(books)
+	h.markBooks(c, books)
 	c.JSON(http.StatusOK, gin.H{"items": books})
 }
 
@@ -465,7 +473,7 @@ func (h *StoreHandler) FeaturedBooks(c *gin.Context) {
 			for _, b := range sliceBatch(batch, offset, size) {
 				books = append(books, feedToLibrary(b))
 			}
-			h.markBooks(books)
+			h.markBooks(c, books)
 			c.JSON(http.StatusOK, gin.H{"items": books, "offset": offset, "has_more": len(books) >= size})
 			return
 		} else {
@@ -486,6 +494,7 @@ func (h *StoreHandler) FeaturedBooks(c *gin.Context) {
 			books[i].LocalStatus = bk.Status
 		}
 	}
+	h.rewriteLibraryCovers(c, books)
 	c.JSON(http.StatusOK, gin.H{"items": books, "offset": offset, "has_more": len(books) >= size})
 }
 
@@ -583,6 +592,7 @@ func (h *StoreHandler) RankBooks(c *gin.Context) {
 			books[i].LocalStatus = bk.Status
 		}
 	}
+	h.rewriteRankCovers(c, books)
 	c.JSON(http.StatusOK, gin.H{"items": books})
 }
 
@@ -609,7 +619,7 @@ func (h *StoreHandler) BookDetail(c *gin.Context) {
 		"fanqie_id":     fid,
 		"title":         detail.Title,
 		"author":        detail.Author,
-		"cover":         detail.Cover,
+		"cover":         h.imgOut(c, detail.Cover),
 		"synopsis":      detail.Synopsis,
 		"chapter_count": len(chapters),
 		"free_count":    free,
@@ -836,15 +846,10 @@ type storeFeedSection struct {
 	NextOffset int             `json:"next_offset,omitempty"`
 }
 
-func feedBooksOut(books []unidbg.FeedBook) []storeFeedBook {
+func (h *StoreHandler) feedBooksOut(c *gin.Context, books []unidbg.FeedBook) []storeFeedBook {
 	booksOut := make([]storeFeedBook, 0, len(books))
 	for _, b := range books {
-		booksOut = append(booksOut, storeFeedBook{
-			ID: b.BookID, Title: b.BookName, Author: b.Author,
-			Synopsis: b.Abstract, Cover: b.ThumbURL, Finished: b.Finished,
-			ReadCount: b.ReadCount, Score: b.Score, RankScore: b.RankScore,
-			Category: b.Category, Tags: b.Tags,
-		})
+		booksOut = append(booksOut, h.feedBookOut(c, b))
 	}
 	return booksOut
 }
@@ -896,7 +901,7 @@ func (h *StoreHandler) AppFeed(c *gin.Context) {
 	out := make([]storeFeedSection, 0, len(secs))
 	for _, s := range secs {
 		out = append(out, storeFeedSection{
-			Title: s.Title, Subtitle: s.Subtitle, Books: feedBooksOut(s.Books),
+			Title: s.Title, Subtitle: s.Subtitle, Books: h.feedBooksOut(c, s.Books),
 			CellID: s.CellID, PlanID: s.PlanID, AlgoType: s.AlgoType, NextOffset: s.NextOffset,
 		})
 	}
@@ -959,7 +964,7 @@ func (h *StoreHandler) AppFeedPage(c *gin.Context) {
 	}
 
 	// ③ 上游聚合拉取并回写两级缓存
-	items, next, more, err := h.guessFeedFetch(cellID, planID, offset)()
+	items, next, more, err := h.guessFeedFetch(c, cellID, planID, offset)()
 	if err == nil {
 		h.cellFeedPut(key, items, next, more, "")
 		if raw, merr := json.Marshal(items); merr == nil {
@@ -990,7 +995,7 @@ const (
 // guessFeedFetch 猜你喜欢聚合拉取：逐页打到 ≥10 本或 3 页上限；中途页失败/空页
 // 保留已聚合部分（游标/has_more 取最后一个成功页），首页为空才算失败。
 // unidbg.FeedPage 内部已带空页 800ms 重试。
-func (h *StoreHandler) guessFeedFetch(cellID, planID string, offset int) func() ([]any, int, bool, error) {
+func (h *StoreHandler) guessFeedFetch(c *gin.Context, cellID, planID string, offset int) func() ([]any, int, bool, error) {
 	return func() ([]any, int, bool, error) {
 		seen := map[string]bool{}
 		var agg []any
@@ -1007,7 +1012,7 @@ func (h *StoreHandler) guessFeedFetch(cellID, planID string, offset int) func() 
 				break // 空页当流结束（内部已重试过）
 			}
 			next, more = n2, m2
-			for _, b := range feedBooksOut(books) {
+			for _, b := range h.feedBooksOut(c, books) {
 				if seen[b.ID] {
 					continue
 				}
@@ -1143,7 +1148,7 @@ func (h *StoreHandler) NovelFeed(c *gin.Context) {
 		}
 		out := make([]any, 0, len(books))
 		for _, b := range books {
-			out = append(out, feedBookOut(b))
+			out = append(out, h.feedBookOut(c, b))
 		}
 		return out, next, more, nil
 	})
@@ -1154,11 +1159,11 @@ func (h *StoreHandler) NovelFeed(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"items": items, "next_offset": nextOffset, "has_more": hasMore})
 }
 
-// feedBookOut unidbg.FeedBook → storeFeedBook（含字数）
-func feedBookOut(b unidbg.FeedBook) storeFeedBook {
+// feedBookOut unidbg.FeedBook → storeFeedBook（含字数；封面改写为代理地址）
+func (h *StoreHandler) feedBookOut(c *gin.Context, b unidbg.FeedBook) storeFeedBook {
 	return storeFeedBook{
 		ID: b.BookID, Title: b.BookName, Author: b.Author,
-		Synopsis: b.Abstract, Cover: b.ThumbURL, Finished: b.Finished,
+		Synopsis: b.Abstract, Cover: h.imgOut(c, b.ThumbURL), Finished: b.Finished,
 		ReadCount: b.ReadCount, Score: b.Score, RankScore: b.RankScore,
 		Category: b.Category, Tags: b.Tags, WordCount: b.WordNumber,
 	}
@@ -1290,7 +1295,7 @@ func (h *StoreHandler) CategoryFeed(c *gin.Context) {
 			c.JSON(http.StatusBadGateway, gin.H{"error": "获取分类书单失败（缓存）"})
 			return
 		}
-		c.JSON(http.StatusOK, catFeedOut(page))
+		c.JSON(http.StatusOK, h.catFeedOut(c, page))
 		return
 	}
 	page, err := h.UNI.CategoryLanding(catID, strconv.Itoa(gender), sel, offset)
@@ -1300,13 +1305,13 @@ func (h *StoreHandler) CategoryFeed(c *gin.Context) {
 		return
 	}
 	h.catFeedPut(key, page, "")
-	c.JSON(http.StatusOK, catFeedOut(page))
+	c.JSON(http.StatusOK, h.catFeedOut(c, page))
 }
 
-func catFeedOut(page *unidbg.CategoryLandingPage) gin.H {
+func (h *StoreHandler) catFeedOut(c *gin.Context, page *unidbg.CategoryLandingPage) gin.H {
 	items := make([]storeFeedBook, 0, len(page.Books))
 	for _, b := range page.Books {
-		items = append(items, feedBookOut(b))
+		items = append(items, h.feedBookOut(c, b))
 	}
 	related := page.Related
 	if related == nil {
@@ -1352,7 +1357,7 @@ func (h *StoreHandler) ComicFeed(c *gin.Context) {
 		for _, b := range cards {
 			out = append(out, storeComicBook{
 				ID: b.BookID, Title: b.BookName, Author: b.Author,
-				Synopsis: b.Abstract, Cover: b.ThumbURL, Category: b.Category,
+				Synopsis: b.Abstract, Cover: h.imgOut(c, b.ThumbURL), Category: b.Category,
 				ReadCount: b.ReadCntText, UpdateTag: b.UpdateTag,
 				WordCount: func() string {
 					if b.SerialCount == "" {
@@ -1439,15 +1444,15 @@ func (h *StoreHandler) ComicDetail(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "获取漫画详情失败: " + err.Error()})
 		return
 	}
-	emitComicDetail(c, bookID, info, chapters, h.comicOnShelf(c, bookID))
+	emitComicDetail(c, bookID, h.imgOut(c, info.ThumbURL), info, chapters, h.comicOnShelf(c, bookID))
 }
 
-func emitComicDetail(c *gin.Context, bookID string, info *unidbg.ComicDetailInfo, chapters []fanqie.ChapterInfo, onShelf bool) {
+func emitComicDetail(c *gin.Context, bookID string, cover string, info *unidbg.ComicDetailInfo, chapters []fanqie.ChapterInfo, onShelf bool) {
 	c.JSON(http.StatusOK, gin.H{
 		"id":        bookID,
 		"title":     info.BookName,
 		"author":    info.Author,
-		"cover":     info.ThumbURL,
+		"cover":     cover,
 		"synopsis":  info.Abstract,
 		"category":  info.Category,
 		"tags":      info.Tags,

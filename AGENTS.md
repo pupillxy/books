@@ -26,6 +26,7 @@
 | 番茄·章节正文（在线读） | 按需回源：**当前只走 TND 范围任务（10/05 起，实测 ~5s/次）**；App 协议/真机签名桥/网页端三个通道由 `book.go` 顶部 const 开关临时关闭（恢复时改回 true） | `handler/book.go` `Chapter`+`fetchOnlineContents` | 读到哪章拉哪章并缓存（FillChapterContent），预取下一章；失败 402「稍后重试」。TND 可读「网页仅试读」的章。通道失败进健康记忆 10 分钟内跳过。关桥原因：桥不常开，每个健康窗口首笔正文白等 12s 拨号超时（10/05 前「新书首章 ~20s」即 12s 桥超时 + TND 叠加） |
 | 番茄·TND 按需单章（10/04 新增） | TND 范围任务（`/api/jobs` + `range_start/end`） | `tnd.go` `CreateRangeJob/WaitJob`、`book.go` `tndChapters` | 走番茄官方接口+闭源证件，读全量正文、无我们设备的风控压力；实测 8~15s/次。产物 `books/<fid>/status.json`（downloaded[item_id]=[章名,HTML]）或《书名》.epub，按 src_id 对号入座剥 HTML 入库。max_workers 已调 2 |
 | 番茄·整本离线缓存 | unidbg 下载器（TND 兜底） | `unidbg.DownloadBook`、`store.go triggerDownload` | 3s/批、断点续传；仅显式触发（`?download=1` 或 POST /download） |
+| 番茄·封面/图片 | **一律走 server 代理（10/05 定案）** | `handler/storeimg.go`、`cover.go` | 浏览封面出参被改写为 `/api/store/img?p=&s=`（HMAC 签名即鉴权，磁盘缓存 `imgcache/`+限速熔断）；书架封面走 `/api/store/cover/:fid`（签名 URL 过期自动详情刷新自愈并回写 DB）。动机：①书城首屏十几张封面直连 CDN 的 TLS 握手在 Flutter UI isolate 执行=掉帧主因；②入库存的 `p3-reading-sign` 签名直链 x-expires 约 1~2 个月就 403（实测 24/56 本封面阵亡）。上游图是 HEIC（240px 小图），CDN 无法协商转格式（换扩展名 403） |
 | 短剧 | 红果 App 协议 | `server/internal/hongguo/` | 与番茄无关，独立风控（锁版本 73532） |
 | 追更 | 每日目录刷新 | `handler/updater.go` | **只刷目录元数据**，新章节靠按需回源，不再批量下载 |
 
@@ -68,6 +69,13 @@
   （autoUpdateConfig 实测不落盘 application.yml！手动改 yml 也可以）。
 - **正文接口只信任有资历的设备**：新注册设备 feed/目录正常但正文空响应（0 字节），
   且是**所有章节**一起挂，与付费与否无关。内容风控冷却 >1 小时。
+  **10/05 重要修正**：reader/full 持续 110 ILLEGAL_ACCESS 多日、且 feed/搜索正常
+  （用户实测"等一天也不自愈"）时，**不是设备风控冷却，先 `docker restart fq-unidbg`
+  再说**——实测重启后 reader/full 立即恢复（漫画 73 图端到端验证），疑似 JVM 进程内
+  registerkey/会话状态损坏；当天 register 新设备实验再次证实**合成注册设备无内容
+  资格**（reader/full 返回 200+0 字节），换设备路线对内容问题无效（还会白折腾 feed
+  资历），别再试。register 不落盘 yml（md5 实测不变），新设备信息只在响应里，
+  手动改 yml 才算数（本次实验配置备份：fq-unidbg/config/application.yml.bak3-pretest）。
   当前配置（10/03 起）用的是 fqsig AVD 实测可读正文的设备（google sdk_gphone64_x86_64，
   device_id 4052162698366793，国内 73733 注册 + oversea 68132 签名混搭被服务端接受）；
   自动轮换已**关闭**（compose `XS_UNIDBG_ROTATE=0`）——10/03 事故证明轮换保 feed 毁正文
@@ -103,6 +111,32 @@ cd _reference/fqnovel-unidbg-src
 - 主题：`core/mo_theme.dart`（朱砂棕），跟随深浅色用 `MoStyle.strongOf(context)`/`softOf(context)`
 - API：`core/api.dart`；会话 `sessionProvider`（core/session.dart）
 - 检查命令：`flutter analyze` + `flutter test`（改动后必须全绿）
+- **应用内更新（10/05）**：server `/api/app/latest`（版本元数据）+ `/api/app/latest/apk`
+  （安装包分发），目录 `xiaoshuo_data/apks/`（=容器 /data/apks，`XS_APP_APK_DIR` 可覆盖）。
+  **发版 = 一条命令**：`powershell -File app/build_all.ps1 -Version 1.1.2 -Notes "说明"`
+  ——自动 bump pubspec build 号（=versionCode）→ flutter build apk → HTTP 上传
+  `/api/app/upload`（X-Upload-Token = compose 的 `XS_UPLOAD_TOKEN`，未配置则通道禁用），
+  server 落盘 `xiaoshuo-<版本>.apk` 并自动重写 latest.json；`-SkipServer` 只打包。
+  **dev/prod 双渠道（10/05，10/06 完善默认指向）**：`-Dev` 开关 = `--flavor dev`
+  （applicationId 加 `.dev` 后缀 → 与生产包并排共存互不覆盖，桌面名"小说阅读 Dev"，
+  versionName 带 `-dev`）+ `--dart-define=APP_CHANNEL=dev` + notes 自动加 `[DEV]` 前缀。
+  **flavor 声明顺序 dev 在前**（Studio sync 后默认 variant = devDebug，Run 按钮默认
+  装 dev 包）；AGP 自带聚合任务 assembleDebug/assembleRelease（同名任务不可重复注册，
+  会报 "Cannot add task"），裸 CLI 构建会同时出 dev+prod 两个 apk。flavor 产物路径：
+  `flutter-apk/app-<flavor>-release.apk`（扁平）。**dev 包的更新检查也走生产通道**
+  （下载生产 APK 更新手机上的正式版，dev 包自身不动；dev 通道 apks/dev/ 仅作分发，
+  App 不消费）。
+  **build_all.ps1 必须 UTF-8 带 BOM**（PowerShell 5.1 无 BOM 按 GBK 解码，中文注释会
+  打碎后续字符串解析报"缺少终止符"）——用 python 改它时用 `utf-8-sig` 写回。
+  Version 参数必须三段式（1.1.2），脚本已校验（两段式如 1.0 会让 pubspec 非法、
+  flutter 构建失败）。生产发版**必须
+  `--flavor prod`**（加 flavor 后裸 `flutter build apk` 会报错）。设置页底部显示
+  版本号 + DEV 角标（kAppChannel 编译期常量，core/app_update.dart）。
+  resolveApk 按 mtime 取目录里最新 *.apk（勿放旧的 latest.apk 进去，曾因此旧包压住新包）。
+  App 登录后自动检查，version_code 更新即弹窗 → 应用内下载（进度条）→ MethodChannel
+  `xiaoshuo/install` 经 FileProvider 拉起系统安装器（Android 8+ 首次需授权"安装未知应用"）。
+  坑：`path_provider` 早已在依赖里，别重复添加；FileProvider 用 `external-files-path`
+  映射（getExternalStorageDirectory 的私有目录，无需存储权限）。
 
 ## 6. Go server 要点
 
@@ -157,7 +191,10 @@ cd _reference/fqnovel-unidbg-src
    ≥10 本或 3 页上限，游标取最后成功页）。App 下拉刷新/手动重试带 `refresh=1`
    绕过①②强制回源并回写两级缓存（更新只跟随下拉刷新）；首屏因此毫秒级且完全
    绕开冷会话。空页重试仍保留在 `unidbg.FeedPage` 内（800ms 一次）。实测样本
-   `_probe/store_feed_1004/`。
+   `_probe/store_feed_1004/`。同族问题（10/05）：漫画频道 cell/change 偶发
+   **code=101116 SERVICE_ERROR**（HTTP 200 业务错误，非空页非风控），实测分钟级
+   自愈、与参数无关（同参数稍后重试即 SUCCESS）。已在 `cellChangeFeed` 就地
+   重试一次（与软空页同框架，新增 `upstreamCodeError` 类型区分风控码不重试）。
 10. **AVD 断网假象（10/05）**：模拟器 App 全卡启动页、状态栏 3G 时，先查
     `adb shell ip route`——AVD 冷启动偶发丢 default 路由，修复 `adb root` +
     `ip route add default via 10.0.2.2 dev eth0`。宿主防火墙挡 ICMP 转发，ping 不通
@@ -203,3 +240,9 @@ app/build/outputs/flutter-apk/  — 构建出的 APK
   可读（第 63 章实例，`_reference/fqemu/capture_xiaoshuo_1003/FINDINGS.md`）。
   未做：`book.go` 的 402 文案「该章节为会员内容」仍以网页 ErrChapterLocked 判定，误导，
   待改成中性文案；真正需要账号权益的章是否存在待遇见时再验证。
+- 书城图片代理已上线（10/05，见 §2 封面行）。未做/注意：①代理只透传 HEIC 字节，
+  未转码——Android 9（API 28）以下设备 BitmapFactory 解不了 HEIF，封面会落渐变占位，
+  要彻底解决需代理层 libheif/CGO 转码 JPEG；②`feed_cache` DB 回放缓存里的旧直链
+  是改写前落库的，随 6h 缓存轮换自清（或下拉刷新 forceRefresh 立即换新）；
+  ③App 端 `HttpOverrides.maxConnectionsPerHost=6` + 榜单 PageView
+  `allowImplicitScrolling` 已上（书城掉帧的网络侧缓解）。

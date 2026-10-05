@@ -82,6 +82,16 @@ func main() {
 
 	// 漫画图片代理：公开端点但带 HMAC 签名参数（签名即鉴权，同短剧 stream/cover）
 	api.GET("/store/comicimg", storeH.ComicImg)
+	// 书城图片代理：浏览封面统一收口（磁盘缓存+限速熔断，签名即鉴权）+
+	// 书架封面（fid 寻址，签名过期自动详情刷新自愈）。公开端点：Image.network 带不了 JWT
+	api.GET("/store/img", storeH.Img)
+	api.GET("/store/cover/:fanqieID", storeH.StoreBookCover)
+
+	// App 应用内更新：版本检查 + 安装包分发（公开端点，系统安装器带不了 JWT）
+	appUp := &handler.AppUpdateHandler{}
+	api.GET("/app/latest", appUp.Latest)
+	api.GET("/app/latest/apk", appUp.ApkFile)
+	api.POST("/app/upload", appUp.Upload) // 发版脚本上传（X-Upload-Token 鉴权）
 
 	authed := api.Group("/", middleware.Auth(cfg.JWTSecret))
 	authed.GET("/me", auth.Me)

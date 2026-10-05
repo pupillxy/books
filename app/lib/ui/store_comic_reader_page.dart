@@ -44,6 +44,7 @@ class _StoreComicReaderPageState extends ConsumerState<StoreComicReaderPage> {
   bool _onShelf = false;
   bool _shelfBusy = false;
   double? _scrub; // 进度条拖动中的临时话序号（未松手不加载）
+  int? _imageCacheBump; // 阅读器期间的位图缓存扩容（原值，dispose 恢复）
 
   ApiClient get _api => ref.read(sessionProvider).api!;
 
@@ -56,12 +57,20 @@ class _StoreComicReaderPageState extends ConsumerState<StoreComicReaderPage> {
     super.initState();
     _index = widget.initialIndex.clamp(0, widget.chapters.length - 1);
     _onShelf = widget.onShelf;
+    // 漫画页解码后仍有 5~10MB/张，默认 100MB 缓存必然疯狂驱逐（回滚重解码
+    // = 滚动闪黑/卡顿）。阅读器期间扩容，退出恢复原值。
+    final cache = PaintingBinding.instance.imageCache;
+    _imageCacheBump = cache.maximumSizeBytes;
+    cache.maximumSizeBytes = 512 << 20;
     _openChapter(_index);
     _scrollCtl.addListener(_onScroll);
   }
 
   @override
   void dispose() {
+    if (_imageCacheBump != null) {
+      PaintingBinding.instance.imageCache.maximumSizeBytes = _imageCacheBump!;
+    }
     _scrollCtl.dispose();
     super.dispose();
   }
@@ -182,38 +191,7 @@ class _StoreComicReaderPageState extends ConsumerState<StoreComicReaderPage> {
                         : ErrorRetry(
                             message: _error ?? '加载失败',
                             onRetry: () => _openChapter(_index)))
-                    : ListView.builder(
-                        controller: _scrollCtl,
-                        itemCount: content.images.length,
-                        itemBuilder: (context, i) {
-                          final img = content.images[i];
-                          return Image.network(
-                            img.url,
-                            width: double.infinity,
-                            fit: BoxFit.fitWidth,
-                            filterQuality: FilterQuality.medium,
-                            loadingBuilder: (context, child, progress) {
-                              if (progress?.expectedTotalBytes ==
-                                  progress?.cumulativeBytesLoaded) {
-                                return child;
-                              }
-                              return AspectRatio(
-                                aspectRatio: 3 / 4,
-                                child: Center(
-                                    child: CircularProgressIndicator(
-                                        strokeWidth: 2,
-                                        color: Colors.white70)),
-                              );
-                            },
-                            errorBuilder: (context, e, st) => AspectRatio(
-                              aspectRatio: 3 / 4,
-                              child: Icon(Icons.broken_image_rounded,
-                                  size: 42, color: Colors.white30),
-                            ),
-                          );
-                        },
-                      ),
-              ),
+                    : _comicList(content)),
             ),
             // 夜间压暗层
             Positioned.fill(
@@ -260,9 +238,65 @@ class _StoreComicReaderPageState extends ConsumerState<StoreComicReaderPage> {
     );
   }
 
+  // ---------- 滚图列表 ----------
+
+  /// 漫画滚图列表。三个关键点（10/05，修"滚动跳回第一张/闪黑图"）：
+  /// ① 行高用 server 下发的真实宽高提前固定（AspectRatio 包住加载/成图/错误
+  ///    三态）——此前加载中 3:4 占位、加载完变真实比例，行高反复突变导致滚动
+  ///    锚点漂移，体感就是"滚着滚着跑回第一张"；
+  /// ② cacheExtent 预构建上下各约 2.5 屏（长图一屏一张 ≈ 上下各 2~3 张），
+  ///    字节下载+解码发生在滚到之前，滚到即显示；
+  /// ③ cacheWidth 限解码宽度 = 屏宽 × dpr（原图 1500×2666 全量解码 16MB/张，
+  ///    一话 73 张必然把默认 100MB 缓存打爆，驱逐重解码 = 闪黑图），内存降 ~60%；
+  ///    缓存上限已在 initState 扩到 512MB，可视区 ± 窗口的图全程驻留。
+  Widget _comicList(ComicChapterContent content) {
+    final size = MediaQuery.sizeOf(context);
+    final dpr = MediaQuery.devicePixelRatioOf(context);
+    final decodeW = (size.width * dpr).round().clamp(720, 2160);
+    return ListView.builder(
+      controller: _scrollCtl,
+      itemCount: content.images.length,
+      cacheExtent: size.height * 2.5,
+      itemBuilder: (context, i) => _comicPage(context, content.images[i], decodeW),
+    );
+  }
+
+  Widget _comicPage(BuildContext context, ComicImage img, int decodeW) {
+    // 元数据缺失时退 3:4 占位比（加载完成不换行高是老行为，正常数据不会走到）
+    final ratio =
+        (img.width > 0 && img.height > 0) ? img.width / img.height : 3 / 4;
+    return AspectRatio(
+      aspectRatio: ratio,
+      child: Image.network(
+        img.url,
+        fit: BoxFit.fill, // 槽位比例=图片真实比例，正好铺满无变形
+        cacheWidth: decodeW,
+        gaplessPlayback: true, // 缓存被驱逐后重解码时保留旧像素，不闪黑
+        filterQuality: FilterQuality.medium,
+        loadingBuilder: (context, child, progress) {
+          if (progress == null) return child;
+          return Center(
+              child: CircularProgressIndicator(
+                  strokeWidth: 2, color: Colors.white70));
+        },
+        errorBuilder: (context, e, st) => Center(
+            child: Icon(Icons.broken_image_rounded,
+                size: 42, color: Colors.white30)),
+      ),
+    );
+  }
+
   // ---------- 点击唤出工具栏（无蒙版：顶栏从上滑下，底部菜单从下滑上）----------
 
-  /// 顶栏：状态栏区域（黑底）+ 返回键 + 书名·话名
+  /// 话名标签：上游漫画话标题通常自带「第N话」前缀，没有时补上
+  String get _chapterLabel {
+    final t = _chapter.title.trim();
+    if (t.startsWith('第')) return t;
+    return '第${_chapter.index}话 · $t';
+  }
+
+  /// 顶栏：状态栏区域（黑底）+ 返回键 + 两行标题（上行书名、下行小字话名，
+  /// 长话名不再把书名一起挤没）
   Widget _topBar() {
     return Material(
       color: Colors.black,
@@ -279,14 +313,29 @@ class _StoreComicReaderPageState extends ConsumerState<StoreComicReaderPage> {
               ),
               const SizedBox(width: 4),
               Expanded(
-                child: Text(
-                  '${widget.title} · ${_chapter.title}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w700,
-                      color: Colors.white),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      widget.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontSize: 14.5,
+                          fontWeight: FontWeight.w700,
+                          color: Colors.white),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      _chapterLabel,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                          fontSize: 11.5,
+                          color: Colors.white.withValues(alpha: 0.65)),
+                    ),
+                  ],
                 ),
               ),
             ],
@@ -321,25 +370,26 @@ class _StoreComicReaderPageState extends ConsumerState<StoreComicReaderPage> {
     }
 
     final n = widget.chapters.length;
+    // 黑面板直通屏幕最底（垫住系统手势条/小白条区域），内容用 sysPad 抬离；
+    // 此前用 SafeArea，面板下方留白透出画面，小白条悬在漫画上很突兀
+    final sysPad = MediaQuery.paddingOf(context).bottom;
     return Material(
       type: MaterialType.transparency,
-      child: SafeArea(
-        top: false,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // 未加入书架：面板右上沿悬浮「加入书架」，随菜单一起滑入滑出
-            if (!_onShelf)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
-                child: Align(alignment: Alignment.centerRight, child: _shelfButton()),
-              ),
-            Material(
-              color: Colors.black,
-              borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
-                child: Column(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // 未加入书架：面板右上沿悬浮「加入书架」，随菜单一起滑入滑出
+          if (!_onShelf)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
+              child: Align(alignment: Alignment.centerRight, child: _shelfButton()),
+            ),
+          Material(
+            color: Colors.black,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+            child: Padding(
+              padding: EdgeInsets.fromLTRB(12, 6, 12, 6 + sysPad),
+              child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     if (n > 1)
@@ -393,7 +443,6 @@ class _StoreComicReaderPageState extends ConsumerState<StoreComicReaderPage> {
             ),
           ],
         ),
-      ),
     );
   }
 

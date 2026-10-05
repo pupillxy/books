@@ -20,14 +20,30 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.xiaoshuo.xiaoshuo_app"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+    }
+
+    // 渠道：dev=测试包（默认！包名 .dev 后缀，与正式包并排共存互不覆盖，桌面名
+    // "小说阅读 Dev"，versionName 带 -dev）；prod=正式包（必须显式 --flavor prod）。
+    // dev 包同时经 --dart-define=APP_CHANNEL=dev 走 dev 更新通道。
+    // 声明顺序 dev 在前 = Studio 同步后默认选中 devDebug（Run 按钮即装 dev 包）；
+    // 裸 CLI 构建（不带 --flavor）会同时出 dev+prod 两个 apk，发版一律走 build_all.ps1。
+    flavorDimensions "env"
+    productFlavors {
+        dev {
+            dimension "env"
+            applicationIdSuffix ".dev"
+            versionNameSuffix "-dev"
+            resValue "string", "app_name", "小说阅读 Dev"
+        }
+        prod {
+            dimension "env"
+            resValue "string", "app_name", "小说阅读"
+        }
     }
 
     buildTypes {
@@ -42,3 +58,4 @@ android {
 flutter {
     source = "../.."
 }
+

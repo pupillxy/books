@@ -377,7 +377,7 @@ class HeroSkeleton extends StatelessWidget {
   }
 }
 
-/// 横向书架占位：4 个灰封面
+/// 横向书架占位：4 个灰封面（ListView 承载，窄屏不溢出——Row 固定宽会溢出报条纹）
 class ShelfSkeleton extends StatelessWidget {
   const ShelfSkeleton({super.key});
 
@@ -385,18 +385,18 @@ class ShelfSkeleton extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final block = cs.brightness == Brightness.dark ? MoStyle.darkRule : MoStyle.rule;
-    return Row(
-      children: [
-        for (var i = 0; i < 4; i++)
-          Container(
-            width: 96,
-            margin: const EdgeInsets.only(right: 12),
-            decoration: BoxDecoration(
-              color: block.withValues(alpha: 0.55),
-              borderRadius: BorderRadius.circular(10),
-            ),
-          ),
-      ],
+    return ListView.builder(
+      scrollDirection: Axis.horizontal,
+      physics: const NeverScrollableScrollPhysics(),
+      itemCount: 4,
+      itemBuilder: (_, i) => Container(
+        width: 96,
+        margin: const EdgeInsets.only(right: 12),
+        decoration: BoxDecoration(
+          color: block.withValues(alpha: 0.55),
+          borderRadius: BorderRadius.circular(10),
+        ),
+      ),
     );
   }
 }
